@@ -69,7 +69,7 @@ aruco_dict, charuco_board = utilities.generate_charuco(BOARD_ROWS, BOARD_COLS,
                                              marker_bits=MARKER_BITS)
 
 # utilities.print_board(charuco_board, multi_size=False)
-# utilities.print_board(charuco_board, multi_size=True, factor=1.1)
+# utilities.print_board(charuco_board, multi_size=True, factor=1.25)
 
 detector_params = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, detector_params)

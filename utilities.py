@@ -119,7 +119,7 @@ def print_board(board, multi_size=False, factor=2.0, dpi=1200):
 
         # Compute the scales to generate, from 1/4 of the page width, to the theoretical smallest with current dpi
         min_scale = 1 / dpi * 25.4 * mm_to_bits   # Theoretical smallest marker size with visible bits
-        max_scale = A4_size_bits[1] / 4 / board_size_bits[1]
+        max_scale = A4_size_bits[1] / 8 / board_size_bits[1]
 
         nb_scales = int(np.ceil(np.log(max_scale / min_scale) / np.log(factor)) + 1)
 
