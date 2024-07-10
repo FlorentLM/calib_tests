@@ -120,7 +120,7 @@ def reduce_polygon(arr, nb_sides=4):
     return np.round(sides_coords[:, 0, :]).astype(int)
 
 
-def generate_charuco(board_rows, board_cols, square_length_mm=5, marker_bits=4, margin=1):
+def generate_charuco(board_rows, board_cols, square_length_mm=5.0, marker_bits=4, margin=1):
     """
         Generates a Charuco board for the given parameters, and optionally saves it in a SVG file.
     """
@@ -181,7 +181,7 @@ def print_board(board, multi_size=False, factor=2.0, dpi=1200):
         text_width = 50.0
 
         min_scale = 1 / dpi * 25.4 / square_length_mm * sq_l_bits   # Theoretical smallest marker size with visible bits
-        max_scale = A4_size_bits[1] / 3 / board_size_bits[1]
+        max_scale = A4_size_bits[1] / 4 / board_size_bits[1]
 
         num_elements = int(np.ceil(np.log(max_scale / min_scale) / np.log(factor)) + 1)
 
@@ -275,8 +275,8 @@ def print_board(board, multi_size=False, factor=2.0, dpi=1200):
 ##
 
 # Generate Charuco board and corresponding detector
-aruco_dict, charuco_board = generate_charuco(4, 3,
-                                             square_length_mm=3.259,
+aruco_dict, charuco_board = generate_charuco(BOARD_ROWS, BOARD_COLS,
+                                             square_length_mm=SQUARE_LENGTH_MM,
                                              marker_bits=MARKER_BITS,
                                              margin=1)
 
