@@ -58,7 +58,7 @@ SQUARE_LENGTH_MM = 5                # Length of one chessboard square in real li
 MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
 MARKER_MARGIN = 1
 
-FOLDER = Path(f'D:\\recordings\\calibration')
+FOLDER = Path(f'/Users/florent/Desktop/cajal_messor_videos/calibration')
 FILE = 'cam1.mp4'
 
 SAVE = True
@@ -385,7 +385,7 @@ def detect(frame, frame_id=None):
             curr_overlap_area = cv2.bitwise_and(this_frames_area, covered_area_so_far)
             newly_added_area = cv2.bitwise_and(this_frames_area, cv2.bitwise_not(curr_overlap_area))
 
-            new_area_pct = newly_added_area.astype(bool).sum() / np.prod(this_frames_area.shape) * 100
+            new_area_pct = newly_added_area.astype(bool).sum() / np.prod(this_frames_area.shape[:2]) * 100
 
             # If the newly added area is more than 1% of the image, store the current detection
             if new_area_pct >= 0.2 and len(charuco_corners) > 5:
@@ -410,7 +410,7 @@ def detect(frame, frame_id=None):
     alpha = 0.15
     img_viz = cv2.addWeighted(img_viz, 1 - alpha, curr_added_area_viz, alpha, 0)
 
-    current_coverage_pct = covered_area_so_far.astype(bool).sum() / np.prod(img_viz.shape) * 100
+    current_coverage_pct = covered_area_so_far.astype(bool).sum() / np.prod(img_viz.shape[:2]) * 100
 
     # Add texts
     img_viz = cv2.putText(img_viz, f"Aruco markers: {nb_detected_markers}/{nb_markers}", (30, 30),
@@ -442,12 +442,14 @@ on_slider_change(0)
 
 while True:
     k = cv2.waitKeyEx(1)
-    if k == 2424832:
+    # if k != -1:
+    #     print(k)
+    if k == 2424832 or k == 63234:
         p = cv2.getTrackbarPos('Frame', w_name)
-        cv2.setTrackbarPos('Frame', w_name, pos=p-1)
-    elif k == 2555904:
+        cv2.setTrackbarPos('Frame', w_name, pos=max(0, p-1))
+    elif k == 2555904 or k == 63235:
         p = cv2.getTrackbarPos('Frame', w_name)
-        cv2.setTrackbarPos('Frame', w_name, pos=p+1)
+        cv2.setTrackbarPos('Frame', w_name, pos=min(nb_frames, p+1))
     elif k == 27:
         break
 
@@ -472,14 +474,14 @@ for i in range(len(objpoints)):
     imgpoints2, _ = cv2.projectPoints(objpoints[i], rvecs[i], tvecs[i], camera_matrix, dist_coeffs)
     error = cv2.norm(all_frames_corners[i], imgpoints2, cv2.NORM_L2) / len(imgpoints2)
     mean_error += error
-    print(f"Frame {all_frames_frame_ids[i]} error: {error}")
+    print(f"Frame {all_frames_frame_ids[i]} error: {error:.2f} px")
 avg_err = mean_error / len(objpoints)
-print(f"Average error: {avg_err}")
+print(f"Average error: {avg_err:.2f} px")
+
 
 # Save calibration data to disk if the reprojection error is ok
-
 if SAVE:
-    cam_name = FILE.split('_')[1]
+    cam_name = FILE.split('.')[0]
     if avg_err < 0.2:
         print(f"Calibration successful! Saving.")
         np.savez_compressed(FOLDER / f'{cam_name}_frames_ids.npz', np.array(list(all_frames_frame_ids)))
