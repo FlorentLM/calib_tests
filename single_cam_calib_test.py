@@ -1,9 +1,9 @@
 import numpy as np
 import cv2
-from PIL import Image
 from collections import deque
 from pathlib import Path
 np.set_printoptions(precision=3, suppress=True, threshold=5)
+import utilities
 
 
 # This script generates the following:
@@ -51,12 +51,10 @@ np.set_printoptions(precision=3, suppress=True, threshold=5)
 #
 
 # Board parameters to detect
-
 BOARD_COLS = 7                      # Total rows in the board (chessboard)
 BOARD_ROWS = 10                     # Total cols in the board
 SQUARE_LENGTH_MM = 5                # Length of one chessboard square in real life units (i.e. mm)
 MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
-MARKER_MARGIN = 1
 
 FOLDER = Path(f'/Users/florent/Desktop/cajal_messor_videos/calibration')
 FILE = 'cam1.mp4'
@@ -65,223 +63,13 @@ SAVE = True
 
 ##
 
-def lines_intersection(line1, line2):
-    """
-        Returns the intersection point of two lines in 2D
-    """
-    xdiff, ydiff = -np.vstack((np.diff(line1, axis=0), np.diff(line2, axis=0))).T
-
-    div = np.cross(xdiff, ydiff)
-    if div == 0:
-       raise Exception('These lines do not intersect!')
-
-    d = (np.cross(*line1), np.cross(*line2))
-
-    return np.cross(d, xdiff) / div, np.cross(d, ydiff) / div
-
-
-def reduce_polygon(arr, nb_sides=4):
-    """
-        Simplifies a polygon to the given number of sides, by iteratively removing the shortest side
-    """
-    nb_edges = arr.shape[0]
-
-    # Compute all lengths and coords for starting polygon
-    rolled = np.roll(arr, -1, axis=0)
-    diffs = rolled - arr
-    sides_lengths = np.sqrt(np.sum(diffs ** 2, axis=1))
-    sides_coords = np.hstack((arr, rolled)).reshape(-1, 2, 2).astype(np.float32)
-
-    while nb_edges > nb_sides:
-        # Remove the shortest side
-        idx_shortest = np.argmin(sides_lengths)
-
-        # Replace the vertex coordinates in the two adjacent sides
-        idx_adj_1 = idx_shortest - 1
-        idx_adj_2 = idx_shortest + 1
-
-        # Loop over if last edge is the shortest
-        if idx_adj_2 == nb_edges:
-            idx_adj_2 = 0
-
-        new_vertex = lines_intersection(sides_coords[idx_adj_1], sides_coords[idx_adj_2])
-        sides_coords[idx_adj_1, 1, :] = new_vertex
-        sides_coords[idx_adj_2, 0, :] = new_vertex
-
-        # update the two new lengths
-        sides_lengths[idx_adj_1] = np.sqrt(np.sum(np.diff(sides_coords[idx_adj_1, :, :], axis=0) ** 2))
-        sides_lengths[idx_adj_2] = np.sqrt(np.sum(np.diff(sides_coords[idx_adj_2, :, :], axis=0) ** 2))
-
-        # Update the coord and legths arrays
-        sides_coords = np.delete(sides_coords, idx_shortest, axis=0)
-        sides_lengths = np.delete(sides_lengths, idx_shortest, axis=0)
-        nb_edges = sides_coords.shape[0]
-
-    return np.round(sides_coords[:, 0, :]).astype(int)
-
-
-def generate_charuco(board_rows, board_cols, square_length_mm=5.0, marker_bits=4, margin=1):
-    """
-        Generates a Charuco board for the given parameters, and optionally saves it in a SVG file.
-    """
-    all_dict_sizes = [50, 100, 250, 1000]
-
-    padding = 1     # Black margin inside the markers (i.e. OpenCV's borderBits)
-
-    mk_l_bits = marker_bits + padding * 2
-    sq_l_bits = mk_l_bits + margin * 2
-
-    marker_length_mm = mk_l_bits / sq_l_bits * square_length_mm
-
-    dict_size = next(s for s in all_dict_sizes if s >= board_rows * board_cols)
-    dict_name = f'DICT_{marker_bits}X{marker_bits}_{dict_size}'
-
-    aruco_dict = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dict_name))
-    board = cv2.aruco.CharucoBoard((board_cols, board_rows),        # number of chessboard squares in x and y directions
-                                   square_length_mm,                # chessboard square side length (normally in meters)
-                                   marker_length_mm,                # marker side length (same unit than squareLength)
-                                   aruco_dict)
-    return aruco_dict, board
-
-
-def print_board(board, multi_size=False, factor=2.0, dpi=1200):
-
-    square_length_mm = board.getSquareLength()
-    marker_length_mm = board.getMarkerLength()
-
-    marker_bits = board.getDictionary().markerSize
-
-    mk_l_bits = marker_bits + 2
-    sq_l_bits = square_length_mm / marker_length_mm * mk_l_bits
-    if not int(sq_l_bits) == sq_l_bits:
-        raise AssertionError('Error creating board svg :(')         # TODO make sure this never happens
-    else:
-        sq_l_bits = int(sq_l_bits)
-
-    margin = int((sq_l_bits - mk_l_bits) / 2)
-
-    board_cols, board_rows = board.getChessboardSize()
-
-    chessboard_arr = (~np.indices((board_rows, board_cols)).sum(axis=0) % 2).astype(bool)
-
-    ##
-
-    A4_mm = np.array([210, 297])
-    A4_size_bits = (A4_mm / square_length_mm) * sq_l_bits
-
-    board_size_bits = np.array([sq_l_bits * board_cols, sq_l_bits * board_rows])
-
-    txt_line_height = 5
-
-    if multi_size:
-        filename = f'Multi_Charuco{board_rows}x{board_cols}_markers{marker_bits}x{marker_bits}-margin{margin}.svg'
-
-        bleed = 20.0
-        spacing = 20.0
-        text_width = 50.0
-
-        min_scale = 1 / dpi * 25.4 / square_length_mm * sq_l_bits   # Theoretical smallest marker size with visible bits
-        max_scale = A4_size_bits[1] / 4 / board_size_bits[1]
-
-        num_elements = int(np.ceil(np.log(max_scale / min_scale) / np.log(factor)) + 1)
-
-        scales = np.array([max_scale / (factor ** i) for i in range(num_elements)])
-        positions = [np.array([bleed, bleed])]
-
-        x_ref, y_ref = positions[0]
-        scale_ref = scales[0]
-
-        for i in range(1, num_elements):
-            x, y = positions[i-1]
-
-            next_x = max(x + text_width + spacing, x + board_size_bits[0] * scales[i-1] + spacing)
-
-            if max(next_x + text_width, next_x + board_size_bits[0] * scales[i]) < A4_size_bits[0] - bleed:
-                next_pos = np.array([next_x, y_ref])
-            else:
-                next_y = y_ref + board_size_bits[1] * scale_ref + txt_line_height * 4 + spacing
-                next_pos = np.array([x_ref, next_y])
-                x_ref, y_ref = next_pos
-                scale_ref = scales[i]
-            positions.append(next_pos)
-    else:
-        filename = f'Charuco{board_rows}x{board_cols}_markers{marker_bits}x{marker_bits}-margin{margin}.svg'
-
-        scales = [1.0]
-        positions = [A4_size_bits / 2.0 - board_size_bits / 2.0]    # centre
-        # positions = [np.array([20.0, 20.0])]    # top-left
-
-    svg_lines = [
-        f'<svg version="1.1" width="100%" height="100%" viewBox="0 0 {A4_size_bits[0]} {A4_size_bits[1]}" xmlns="http://www.w3.org/2000/svg">']
-    svg_lines.append(
-        f' <rect id="background" x="0" y="0" width="{A4_size_bits[0]}" height="{A4_size_bits[1]}" fill="none" stroke="#000000" stroke-width="0.1"/>')
-
-    for board_pos, board_scale in zip(positions, scales):
-
-        svg_lines.append(f'  <g id="container" transform="translate({board_pos[0]}, {board_pos[1]})">')
-
-        svg_lines.append(f'    <line x1="-1" y1="-1" x2="-1" y2="-6" stroke="black" stroke-width="0.1" />')
-        svg_lines.append(f'    <line x1="-6" y1="-1" x2="-1" y2="-1" stroke="black" stroke-width="0.1" />')
-        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 1}" y1="-1" x2="{board_size_bits[0] * board_scale + 1}" y2="-6" stroke="black" stroke-width="0.1" />')
-        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 1}" y1="-1" x2="{board_size_bits[0] * board_scale + 6}" y2="-1" stroke="black" stroke-width="0.1" />')
-
-        svg_lines.append(f'    <line x1="-1" y1="{board_size_bits[1] * board_scale + 1}" x2="-1" y2="{board_size_bits[1] * board_scale + 6}" stroke="black" stroke-width="0.1" />')
-        svg_lines.append(f'    <line x1="-6" y1="{board_size_bits[1] * board_scale + 1}" x2="-1" y2="{board_size_bits[1] * board_scale + 1}" stroke="black" stroke-width="0.1" />')
-        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 1}" y1="{board_size_bits[1] * board_scale + 1}" x2="{board_size_bits[0] * board_scale + 1}" y2="{board_size_bits[1] * board_scale + 6}" stroke="black" stroke-width="0.1" />')
-        svg_lines.append(f'    <line x1="{board_size_bits[0] * board_scale + 1}" y1="{board_size_bits[1] * board_scale + 1}" x2="{board_size_bits[0] * board_scale + 6}" y2="{board_size_bits[1] * board_scale + 1}" stroke="black" stroke-width="0.1" />')
-
-        svg_lines.append(f'    <g id="charuco" transform="scale({board_scale})">')
-
-        svg_lines.append(f'      <rect id="background" x="0" y="0" width="{board_size_bits[0]}" height="{board_size_bits[1]}" fill="#ffffff"/>')
-
-        # Chessboard group
-        svg_lines.append('      <g id="chessboard">')
-        cc, rr = np.where(chessboard_arr)
-        for i, rc in enumerate(zip(rr, cc)):
-            svg_lines.append(f'        <rect id="{i}" x="{rc[0] * sq_l_bits}" y="{rc[1] * sq_l_bits}" width="{sq_l_bits}" height="{sq_l_bits}" fill="#000000"/>')
-        svg_lines.append('      </g>')
-
-        # Aruco markers group
-        svg_lines.append('      <g id="aruco_markers">')
-        cc, rr = np.where(~chessboard_arr)
-        for i, rc in enumerate(zip(rr, cc)):
-            marker = aruco_dict.generateImageMarker(i, mk_l_bits, mk_l_bits).astype(bool)
-            py, px = np.where(marker)
-            svg_lines.append(f'        <g id="{i}">')
-            svg_lines.append(
-                f'          <rect x="{rc[0] * sq_l_bits + margin}" y="{rc[1] * sq_l_bits + margin}" width="{mk_l_bits}" height="{mk_l_bits}" fill="#000000"/>')
-            for x, y in zip(px, py):
-                svg_lines.append(f'          <rect x="{rc[0] * sq_l_bits + x + margin}" y="{rc[1] * sq_l_bits + y + margin}" width="1" height="1" fill="#ffffff"/>')
-
-            svg_lines.append('        </g>')
-
-        svg_lines.append('      </g>')
-        svg_lines.append('    </g>')
-
-        bsize_text = f'{board_scale * square_length_mm * board_rows:.1f} x {board_scale * square_length_mm * board_cols:.1f} mm'
-        sqsize_text = f'(squares: {board_scale * square_length_mm:.3f} mm)'
-        msize_text = f'(markers: {board_scale * marker_length_mm:.3f} mm)'
-        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + txt_line_height + 6}" font-family="monospace" font-size="{txt_line_height}" font-weight="bold">{bsize_text}</text>')
-        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + txt_line_height * 2 + 7.5}" font-family="monospace" font-size="{txt_line_height}" font-weight="bold">{sqsize_text}</text>')
-        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + txt_line_height * 3 + 9}" font-family="monospace" font-size="{txt_line_height}" font-weight="bold">{msize_text}</text>')
-        svg_lines.append('  </g>')
-
-    svg_lines.append('</svg>')
-
-    with open(filename, 'w') as f:
-        f.write('\n'.join(svg_lines))
-
-
-##
-
 # Generate Charuco board and corresponding detector
-aruco_dict, charuco_board = generate_charuco(BOARD_ROWS, BOARD_COLS,
+aruco_dict, charuco_board = utilities.generate_charuco(BOARD_ROWS, BOARD_COLS,
                                              square_length_mm=SQUARE_LENGTH_MM,
-                                             marker_bits=MARKER_BITS,
-                                             margin=1)
+                                             marker_bits=MARKER_BITS)
 
-# print_board(charuco_board, multi_size=False)
-# print_board(charuco_board, multi_size=True, factor=1.5)
+# utilities.print_board(charuco_board, multi_size=False)
+# utilities.print_board(charuco_board, multi_size=True, factor=1.1)
 
 detector_params = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, detector_params)
@@ -303,7 +91,6 @@ r, frame = cap.read()
 nb_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
 # Init some global variables
-
 img_viz = np.copy(frame)
 
 empty_frame = np.zeros_like(frame)
@@ -357,9 +144,9 @@ def detect(frame, frame_id=None):
         contours = np.vstack(contours)
 
         hull = np.array(cv2.convexHull(contours))[:, 0, :]
-        new_hull = reduce_polygon(hull, nb_sides=8)    # 8 is a good value to get rectangle-ish polygons most of the time and still avoid jumpy triangles when the board is viewed from the side
+        # hull = utilities.reduce_polygon(hull, nb_sides=8)    # 8 is a good value to get rectangle-ish polygons most of the time and still avoid jumpy triangles when the board is viewed from the side
 
-        board_area = np.array(~cv2.drawContours(np.copy(empty_frame),[new_hull.astype(int)], 0, (255, 255, 255), 1)[:, :, 0].astype(bool), dtype=np.uint8) * 255
+        board_area = np.array(~cv2.drawContours(np.copy(empty_frame),[hull.astype(int)], 0, (255, 255, 255), 1)[:, :, 0].astype(bool), dtype=np.uint8) * 255
         mask = np.zeros(source_shape[:2] + 2, dtype=np.uint8)
         _, this_frames_area, _, _ = cv2.floodFill(board_area, mask, (0, 0), 0)
 
