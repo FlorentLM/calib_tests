@@ -54,17 +54,12 @@ np.set_printoptions(precision=3, suppress=True, threshold=5)
 
 BOARD_COLS = 7                      # Total rows in the board (chessboard)
 BOARD_ROWS = 10                     # Total cols in the board
-# BOARD_COLS = 7                      # Total rows in the board (chessboard)
-# BOARD_ROWS = 5                     # Total cols in the board
 SQUARE_LENGTH_MM = 5                # Length of one chessboard square in real life units (i.e. mm)
 MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
-# MARKER_BITS = 5                     # Size of the markers in 'pixels' (not really, but you get the idea)
 MARKER_MARGIN = 1
-# MARKER_MARGIN = 4
 
-FOLDER = Path(f'/Users/florent/Desktop/cajal_messor_videos/calibration/')
-# FOLDER = Path(f'/Users/florent/Desktop/cool/calib_2/')
-CAM = 'cam1'
+FOLDER = Path(f'D:\\recordings\\calibration')
+FILE = 'cam1.mp4'
 
 SAVE = True
 
@@ -275,20 +270,18 @@ def print_board(board, multi_size=False, factor=2.0, dpi=1200):
 
     with open(filename, 'w') as f:
         f.write('\n'.join(svg_lines))
-        # TODO - save a A4 page with many copies of the board in different sizes
-
 
 
 ##
 
 # Generate Charuco board and corresponding detector
 aruco_dict, charuco_board = generate_charuco(4, 3,
-                                             square_length_mm=SQUARE_LENGTH_MM,
+                                             square_length_mm=3.259,
                                              marker_bits=MARKER_BITS,
                                              margin=1)
 
 # print_board(charuco_board, multi_size=False)
-print_board(charuco_board, multi_size=True, factor=1.5)
+# print_board(charuco_board, multi_size=True, factor=1.5)
 
 detector_params = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, detector_params)
@@ -302,8 +295,7 @@ dist_coeffs = None
 
 ##
 
-video_path = FOLDER / f'{CAM}.mp4'
-# video_path = FOLDER / f'{CAM}_white_session0.mp4'
+video_path = FOLDER / FILE
 
 # Read one frame to get dimensions
 cap = cv2.VideoCapture(video_path.as_posix())
@@ -430,7 +422,9 @@ def detect(frame, frame_id=None):
     img_viz = cv2.putText(img_viz, f"Area: {current_coverage_pct:.2f}% ({len(all_frames_corners)} snapshots)", (30, 90),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), thickness=2)
 
-    cv2.imshow(w_name, img_viz)
+    f = 800 / max(img_viz.shape)
+    img_viz_resized = cv2.resize(img_viz, (int(img_viz.shape[1] * f),int(img_viz.shape[0] * f)), interpolation=cv2.INTER_LINEAR)
+    cv2.imshow(w_name, img_viz_resized)
 
 ##
 
@@ -443,12 +437,18 @@ def on_slider_change(trackbar_value):
     pass
 
 cv2.namedWindow(w_name)
-cv2.createTrackbar('Frame:', w_name, 0, nb_frames, on_slider_change)
+cv2.createTrackbar('Frame', w_name, 0, nb_frames, on_slider_change)
 on_slider_change(0)
 
 while True:
-    k = cv2.waitKey(1)
-    if k == 27:
+    k = cv2.waitKeyEx(1)
+    if k == 2424832:
+        p = cv2.getTrackbarPos('Frame', w_name)
+        cv2.setTrackbarPos('Frame', w_name, pos=p-1)
+    elif k == 2555904:
+        p = cv2.getTrackbarPos('Frame', w_name)
+        cv2.setTrackbarPos('Frame', w_name, pos=p+1)
+    elif k == 27:
         break
 
 cv2.destroyAllWindows()
@@ -479,12 +479,13 @@ print(f"Average error: {avg_err}")
 # Save calibration data to disk if the reprojection error is ok
 
 if SAVE:
+    cam_name = FILE.split('_')[1]
     if avg_err < 0.2:
         print(f"Calibration successful! Saving.")
-        np.savez_compressed(FOLDER / f'{CAM}_frames_ids.npz', np.array(list(all_frames_frame_ids)))
-        np.savez_compressed(FOLDER / f'{CAM}_camera_matrix.npz', camera_matrix)
-        np.savez_compressed(FOLDER / f'{CAM}_dist_coeffs.npz', dist_coeffs)
-        np.savez_compressed(FOLDER / f'{CAM}_rvecs.npz', np.hstack(rvecs).T)
-        np.savez_compressed(FOLDER / f'{CAM}_tvecs.npz', np.hstack(tvecs).T)
+        np.savez_compressed(FOLDER / f'{cam_name}_frames_ids.npz', np.array(list(all_frames_frame_ids)))
+        np.savez_compressed(FOLDER / f'{cam_name}_camera_matrix.npz', camera_matrix)
+        np.savez_compressed(FOLDER / f'{cam_name}_dist_coeffs.npz', dist_coeffs)
+        np.savez_compressed(FOLDER / f'{cam_name}_rvecs.npz', np.hstack(rvecs).T)
+        np.savez_compressed(FOLDER / f'{cam_name}_tvecs.npz', np.hstack(tvecs).T)
     else:
         print(f"Calibration is meh... Not saving")
