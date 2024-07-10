@@ -149,7 +149,9 @@ def generate_charuco(board_rows, board_cols, square_length_mm=5, marker_bits=4, 
     return aruco_dict, board
 
 
-def print_board(board, multi_size=False):
+def print_board(board, multi_size=False, dpi=1200):
+
+    text_size = 6
 
     square_length_mm = board.getSquareLength()
     marker_length_mm = board.getMarkerLength()
@@ -167,30 +169,27 @@ def print_board(board, multi_size=False):
 
     board_cols, board_rows = board.getChessboardSize()
 
+    chessboard_arr = (~np.indices((board_rows, board_cols)).sum(axis=0) % 2).astype(bool)
+
     ##
 
     A4_mm = np.array([210, 297])
-    A4_mm_withbleed = A4_mm - 20
-
-    # A4_in = A4_mm / 25.4
-    # dpi = 1200
-    # # Everyone has a different way to approx sizes in pixels - this double rounding is probably closest to most
-    # doc_size = np.round(np.round(A4_in * dpi, decimals=1)).astype(int)
-
-    A4_size_bits = A4_mm / square_length_mm * sq_l_bits
-
-    chessboard_arr = (~np.indices((board_rows, board_cols)).sum(axis=0) % 2).astype(bool)
+    A4_size_bits = (A4_mm / square_length_mm) * sq_l_bits
 
     board_size_bits = np.array([sq_l_bits * board_cols, sq_l_bits * board_rows])
 
-    text_size = 6
-
     if multi_size:
-        scales = []
-        positions = []
+        min_scale = 1 / dpi * 25.4 / square_length_mm * sq_l_bits   # Theoretical smallest marker size with visible bits
+        max_scale = A4_size_bits[1] / 2 / board_size_bits[1]
+
+        num_elements = np.ceil(np.log2(max_scale / min_scale)).astype(int) + 1
+        scales = np.array([max_scale / (2 ** i) for i in range(num_elements)])
+        positions = [np.array([20.0, 20.0])]
+        [positions.append(np.array([positions[i][0], positions[i][1] + 5 * text_size + board_size_bits[1] * scale])) for i, scale in enumerate(scales)]
     else:
         scales = [1.0]
-        positions = [A4_size_bits / 2.0 - board_size_bits / 2.0]
+        # positions = [A4_size_bits / 2.0]    # centre
+        positions = [np.array([20.0, 20.0])]    # top-left
 
     svg_lines = [
         f'<svg version="1.1" width="100%" height="100%" viewBox="0 0 {A4_size_bits[0]} {A4_size_bits[1]}" xmlns="http://www.w3.org/2000/svg">']
@@ -239,8 +238,10 @@ def print_board(board, multi_size=False):
         svg_lines.append('      </g>')
         svg_lines.append('    </g>')
 
-        size_text = f'{board_scale * square_length_mm * board_cols:.1f} x {board_scale * square_length_mm * board_rows:.1f} mm\n(markers: {board_scale * marker_length_mm:.3f} mm)'
-        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_size * 2}" font-family="monospace" font-size="{text_size}" font-weight="bold">{size_text}</text>')
+        bsize_text = f'{board_scale * square_length_mm * board_rows:.1f} x {board_scale * square_length_mm * board_cols:.1f} mm'
+        msize_text = f'(markers: {board_scale * marker_length_mm:.3f} mm)'
+        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_size * 2}" font-family="monospace" font-size="{text_size}" font-weight="bold">{bsize_text}</text>')
+        svg_lines.append(f'    <text x="0" y="{board_size_bits[1] * board_scale + text_size * 3}" font-family="monospace" font-size="{text_size}" font-weight="bold">{msize_text}</text>')
         svg_lines.append('  </g>')
 
     svg_lines.append('</svg>')
@@ -255,12 +256,12 @@ def print_board(board, multi_size=False):
 ##
 
 # Generate Charuco board and corresponding detector
-aruco_dict, charuco_board = generate_charuco(2, 3,
+aruco_dict, charuco_board = generate_charuco(5, 3,
                                              square_length_mm=SQUARE_LENGTH_MM,
                                              marker_bits=MARKER_BITS,
                                              margin=1)
 
-print_board(charuco_board)
+print_board(charuco_board, multi_size=True)
 
 detector_params = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, detector_params)
