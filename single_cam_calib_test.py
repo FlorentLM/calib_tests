@@ -54,11 +54,17 @@ np.set_printoptions(precision=3, suppress=True, threshold=5)
 
 BOARD_COLS = 7                      # Total rows in the board (chessboard)
 BOARD_ROWS = 10                     # Total cols in the board
+# BOARD_COLS = 7                      # Total rows in the board (chessboard)
+# BOARD_ROWS = 5                     # Total cols in the board
 SQUARE_LENGTH_MM = 5                # Length of one chessboard square in real life units (i.e. mm)
 MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
+# MARKER_BITS = 5                     # Size of the markers in 'pixels' (not really, but you get the idea)
+MARKER_MARGIN = 1
+# MARKER_MARGIN = 4
 
 FOLDER = Path(f'/Users/florent/Desktop/cajal_messor_videos/calibration/')
-CAM = 'cam3'
+# FOLDER = Path(f'/Users/florent/Desktop/cool/calib_2/')
+CAM = 'cam1'
 
 SAVE = True
 
@@ -119,14 +125,14 @@ def reduce_polygon(arr, nb_sides=4):
     return np.round(sides_coords[:, 0, :]).astype(int)
 
 
-def generate_charuco(board_rows, board_cols, square_length_mm=5, marker_bits=4, save_svg=True):
+def generate_charuco(board_rows, board_cols, square_length_mm=5, marker_bits=4, margin=1, save_svg=True):
     """
         Generates a Charuco board for the given parameters, and optionally saves it in a SVG file.
     """
     all_dict_sizes = [50, 100, 250, 1000]
 
-    mk_l_px = marker_bits + 2
-    sq_l_px = mk_l_px + 2
+    mk_l_px = marker_bits + margin * 2
+    sq_l_px = mk_l_px + margin * 2
 
     marker_length_mm = mk_l_px / sq_l_px * square_length_mm
 
@@ -160,9 +166,9 @@ def generate_charuco(board_rows, board_cols, square_length_mm=5, marker_bits=4, 
             py, px = np.where(marker)
             svg_lines.append(f'      <g id="{i}">')
             svg_lines.append(
-                f'        <rect x="{rc[0] * sq_l_px + 1}" y="{rc[1] * sq_l_px + 1}" width="{mk_l_px}" height="{mk_l_px}" fill="#000000"/>')
+                f'        <rect x="{rc[0] * sq_l_px + margin}" y="{rc[1] * sq_l_px + margin}" width="{mk_l_px}" height="{mk_l_px}" fill="#000000"/>')
             for x, y in zip(px, py):
-                svg_lines.append(f'        <rect x="{rc[0] * sq_l_px + x + 1}" y="{rc[1] * sq_l_px + y + 1}" width="1" height="1" fill="#ffffff"/>')
+                svg_lines.append(f'        <rect x="{rc[0] * sq_l_px + x + margin}" y="{rc[1] * sq_l_px + y + margin}" width="1" height="1" fill="#ffffff"/>')
 
             svg_lines.append('      </g>')
 
@@ -184,7 +190,8 @@ def generate_charuco(board_rows, board_cols, square_length_mm=5, marker_bits=4, 
 aruco_dict, charuco_board = generate_charuco(BOARD_ROWS, BOARD_COLS,
                                              square_length_mm=SQUARE_LENGTH_MM,
                                              marker_bits=MARKER_BITS,
-                                             save_svg=False)
+                                             margin=MARKER_MARGIN,
+                                             save_svg=True)
 
 detector_params = cv2.aruco.DetectorParameters()
 detector = cv2.aruco.ArucoDetector(aruco_dict, detector_params)
@@ -199,6 +206,7 @@ dist_coeffs = None
 ##
 
 video_path = FOLDER / f'{CAM}.mp4'
+# video_path = FOLDER / f'{CAM}_white_session0.mp4'
 
 # Read one frame to get dimensions
 cap = cv2.VideoCapture(video_path.as_posix())

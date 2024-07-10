@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 
 
-def extrinsics_mat(rvec, tvec):
+def extrinsics_mat(rvec, tvec, hom=False):
     """
         Convert rotation vector and translation vector to a 3x4 extrinsics matrix E
 
@@ -20,7 +20,11 @@ def extrinsics_mat(rvec, tvec):
     # Insert R mat into the Transform matrix and append translation vector to last column
     E[:3, :3] = R
     E[:3, 3] = tvec
-    return E
+
+    if hom:
+        return np.vstack((E, np.array([0, 0, 0, 1])))
+    else:
+        return E
 
 
 def to_rtvecs(extrinsics_mat):
