@@ -197,7 +197,7 @@ def print_board(board, multi_size=False):
     svg_lines.append(
         f' <rect id="background" x="0" y="0" width="{A4_size_bits[0]}" height="{A4_size_bits[1]}" fill="none" stroke="#000000" stroke-width="0.1"/>')
 
-    for board_scale, board_pos in zip(positions, scales):
+    for board_pos, board_scale in zip(positions, scales):
 
         svg_lines.append(f'  <g id="container" transform="translate({board_pos[0]}, {board_pos[1]})">')
 
@@ -255,7 +255,7 @@ def print_board(board, multi_size=False):
 ##
 
 # Generate Charuco board and corresponding detector
-aruco_dict, charuco_board = generate_charuco(BOARD_ROWS, BOARD_COLS,
+aruco_dict, charuco_board = generate_charuco(2, 3,
                                              square_length_mm=SQUARE_LENGTH_MM,
                                              marker_bits=MARKER_BITS,
                                              margin=1)
