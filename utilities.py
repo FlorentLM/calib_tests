@@ -1,6 +1,6 @@
 import numpy as np
 import cv2
-
+from pathlib import Path
 
 def lines_intersection(line1, line2):
     """
@@ -55,6 +55,20 @@ def reduce_polygon(arr, nb_sides=4):
         nb_edges = sides_coords.shape[0]
 
     return np.round(sides_coords[:, 0, :]).astype(int)
+
+
+def probe_video(video_path):
+    video_path = Path(video_path)
+    if not video_path.exists():
+        raise FileNotFoundError(video_path.resolve())
+    cap = cv2.VideoCapture(video_path.as_posix())
+    r, frame = cap.read()
+    if not r:
+        raise IOError(f"Can't read video {video_path.resolve()}")
+    nb_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    cap.release()
+    return frame.shape, nb_frames
+
 
 def generate_charuco(board_rows, board_cols, square_length_mm=5.0, marker_bits=4, margin=1):
     """
@@ -210,3 +224,45 @@ def print_board(board, multi_size=False, factor=2.0, dpi=1200):
 
     with open(filename, 'w') as f:
         f.write('\n'.join(svg_lines))
+
+
+def markers_binary_contour(frame, markers_coords):
+    """
+        Returns the contour of each marker from a list of markers coords, as a binary array
+    """
+    markers_coloured = cv2.aruco.drawDetectedMarkers(np.zeros_like(frame), markers_coords)
+    # Second channel is the marker perimeter, third channel is the corner square indicator
+    ch1, ch2 = markers_coloured.T[1:]
+    full_perimeter = np.logical_or(np.logical_and(ch1, ch2), ch1).T
+    return full_perimeter
+
+
+def binary_contour(frame, coords):
+    """
+        Returns the contour of a list of coords, as a binary array
+    """
+    coords_added_axis = np.atleast_3d(coords).reshape(1, -1, 2)
+    contours = cv2.drawContours(np.zeros(frame.shape[:2], dtype=np.uint8), coords_added_axis, 0, 255, 1)
+    return contours.astype(bool)
+
+
+def fill_binary_contour(contour_img):
+    """
+        Fills a binary contour...
+    """
+    mask = np.zeros((contour_img.shape[0] + 2, contour_img.shape[1] + 2), dtype=np.uint8)
+    _, filled, _, _ = cv2.floodFill(~contour_img.astype(np.uint8), mask, (0, 0), 0)
+    return filled.astype(bool)
+
+
+def hull_coords(contour_img, reduce_to=None):
+    """
+        Returns the hull of all positive areas in a binary image, optionally simplified to n sides
+    """
+    contours_all, _ = cv2.findContours(contour_img.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours_all = np.vstack(contours_all)
+
+    hull = np.array(cv2.convexHull(contours_all))[:, 0, :]
+    if reduce_to is not None:
+        hull = np.round(utilities.reduce_polygon(hull, nb_sides=reduce_to)).astype(int)
+    return hull

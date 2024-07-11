@@ -48,7 +48,7 @@ import utilities
 #
 # ==============================================================
 # More info on https://docs.opencv.org/4.x/d9/d0c/group__calib3d.html
-#
+
 
 # Board parameters to detect
 BOARD_COLS = 7                      # Total rows in the board (chessboard)
@@ -56,10 +56,12 @@ BOARD_ROWS = 10                     # Total cols in the board
 SQUARE_LENGTH_MM = 5                # Length of one chessboard square in real life units (i.e. mm)
 MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
 
+# Video to load
 FOLDER = Path(f'/Users/florent/Desktop/cajal_messor_videos/calibration')
 FILE = 'cam1.mp4'
 
-SAVE = True
+SAVE = False                        # Whether to save the calibration or no
+REPROJ_ERR = 0.2                    # Reprojection error we deem acceptable
 
 ##
 
@@ -68,97 +70,78 @@ aruco_dict, charuco_board = utilities.generate_charuco(BOARD_ROWS, BOARD_COLS,
                                              square_length_mm=SQUARE_LENGTH_MM,
                                              marker_bits=MARKER_BITS)
 
+# Optionally save the board as a svg for printing
 # utilities.print_board(charuco_board, multi_size=False)
 # utilities.print_board(charuco_board, multi_size=True, factor=1.25)
 
-detector_params = cv2.aruco.DetectorParameters()
-detector = cv2.aruco.ArucoDetector(aruco_dict, detector_params)
-
-# Stop criteria for board corners refinement
+# Create a detector (default parameters) and define stop criteria for board corners refinement
+detector = cv2.aruco.ArucoDetector(aruco_dict, cv2.aruco.DetectorParameters())
 criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
 
-# Initialise these to None for first estimation without a prior
-camera_matrix = None
-dist_coeffs = None
+nb_total_markers = len(charuco_board.getIds())
+nb_total_corners = len(charuco_board.getChessboardCorners())
 
 ##
 
 video_path = FOLDER / FILE
+shape, nb_frames = utilities.probe_video(video_path)
 
-# Read one frame to get dimensions
 cap = cv2.VideoCapture(video_path.as_posix())
-r, frame = cap.read()
-nb_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+w_name = 'detection'
 
 # Init some global variables
-img_viz = np.copy(frame)
+coverage = np.full(shape[:2], False)    # This is the area of the image that has been covered so far
 
-empty_frame = np.zeros_like(frame)
-source_shape = np.array(frame.shape, dtype=np.uint32)
-
-covered_area_so_far = np.zeros(source_shape[:2], dtype=np.uint8)
-current_coverage_pct = 0
+# These will store detection data for each frame
 all_frames_corners = deque()
 all_frames_ids = deque()
 all_frames_frame_ids = deque()
 
-nb_markers = len(charuco_board.getIds())
-nb_corners = len(charuco_board.getChessboardCorners())
+# These are the ones we want to compute, we initialise them to None for the first estimation without a prior
+camera_matrix = None
+dist_coeffs = None
 
-previous_poly = None
-
-w_name = 'detection'
 
 # This is the function that does the bulk of the work
 def detect(frame, frame_id=None):
-    img_viz = np.copy(frame)
-    empty_frame = np.zeros_like(frame)
+    nb_detected_markers = 0
     nb_detected_squares = 0
 
+    if frame.ndim == 3:
+        frame_ch0 = frame[:, :, 0]
+    else:
+        frame_ch0 = frame
+        frame = np.broadcast_to(frame, (*frame.shape, 3))
+
     # Detect and refine aruco markers
-    marker_corners, marker_ids, rejected = detector.detectMarkers(frame)
+    marker_corners, marker_ids, rejected = detector.detectMarkers(frame_ch0)
     marker_corners, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
-        image=frame,
+        image=frame_ch0,
         board=charuco_board,
         detectedCorners=marker_corners,
         detectedIds=marker_ids,
-        rejectedCorners=rejected)
+        rejectedCorners=rejected,
+        cameraMatrix=camera_matrix,
+        distCoeffs=dist_coeffs)
 
-    if marker_ids is None:
-        nb_detected_markers = 0
-        this_frames_area = 0
-
-    # If any marker has been detected, detect the board corners
-    else:
+    # No marker detected
+    if marker_ids is not None:
         nb_detected_markers = len(marker_ids)
 
-        markers_col = cv2.aruco.drawDetectedMarkers(np.copy(empty_frame), marker_corners)
-        markers = markers_col[:, :, 1]
-        corners = markers_col[:, :, 2]
-        markers_full_perimeter = np.array(~((markers.astype(bool) & corners.astype(bool)) | markers.astype(bool))).astype(np.uint8) * 255
-
-        mask = np.zeros(source_shape[:2] + 2, dtype=np.uint8)
-        _, markers_filled, _, _ = cv2.floodFill(markers_full_perimeter, mask, (0, 0), 0)
-
-        contours, _ = cv2.findContours(markers_filled, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours = np.vstack(contours)
-
-        hull = np.array(cv2.convexHull(contours))[:, 0, :]
-        # hull = utilities.reduce_polygon(hull, nb_sides=8)    # 8 is a good value to get rectangle-ish polygons most of the time and still avoid jumpy triangles when the board is viewed from the side
-
-        board_area = np.array(~cv2.drawContours(np.copy(empty_frame),[hull.astype(int)], 0, (255, 255, 255), 1)[:, :, 0].astype(bool), dtype=np.uint8) * 255
-        mask = np.zeros(source_shape[:2] + 2, dtype=np.uint8)
-        _, this_frames_area, _, _ = cv2.floodFill(board_area, mask, (0, 0), 0)
+    # If any marker has been detected, try to detect the board corners
+    if nb_detected_markers > 0:
 
         nb_detected_squares, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
             markerCorners=marker_corners,
             markerIds=marker_ids,
-            image=frame,
+            image=frame_ch0,
             board=charuco_board,
             cameraMatrix=camera_matrix,
             distCoeffs=dist_coeffs,
-            minMarkers=0)
+            minMarkers=1)
         try:
+            # Refine the board corners
             charuco_corners = cv2.cornerSubPix(frame, charuco_corners,
                                                winSize=(20, 20),
                                                zeroZone=(-1, -1),
@@ -166,52 +149,44 @@ def detect(frame, frame_id=None):
         except:
             pass
 
-        # If corners have been found, compute the area covered by this frame's board detection
+        # If corners have been found, show them as red dots
         if charuco_corners is not None:
-            # the area that overlaps with the area covered so far
-            curr_overlap_area = cv2.bitwise_and(this_frames_area, covered_area_so_far)
-            newly_added_area = cv2.bitwise_and(this_frames_area, cv2.bitwise_not(curr_overlap_area))
+            for xy in charuco_corners[:, 0]:
+                frame = cv2.circle(frame, np.round(xy).astype(int), 2, (0, 0, 255), 2)
 
-            new_area_pct = newly_added_area.astype(bool).sum() / np.prod(this_frames_area.shape[:2]) * 100
+            # Compute image area with detection
+            markers_bin_ctr = utilities.markers_binary_contour(frame, marker_corners)
+            hull_pts = utilities.hull_coords(markers_bin_ctr)
+            hull_bin_ctr = utilities.binary_contour(frame_ch0, hull_pts)
+            detected_area = utilities.fill_binary_contour(hull_bin_ctr)
 
-            # If the newly added area is more than 1% of the image, store the current detection
-            if new_area_pct >= 0.2 and len(charuco_corners) > 5:
+            # Newly detected area is the union of the current detection and the inverse of the overlap with existing
+            overlap = np.logical_and(detected_area, coverage)
+            new_area = np.logical_and(detected_area, ~overlap)
+
+            # If the new frame brings sufficiently new coverage, add its data to the list
+            if new_area.mean() * 100 >= 0.2 and len(charuco_corners) > 5:
                 all_frames_corners.append(charuco_corners)
                 all_frames_ids.append(charuco_ids)
-                covered_area_so_far[this_frames_area.astype(bool)] = 255
-
+                coverage[detected_area] = True
                 if frame_id is not None:
                     all_frames_frame_ids.append(frame_id)
 
-            # curr_added_area_viz = cv2.cvtColor(newly_added_area, cv2.COLOR_GRAY2BGR)
-            # alpha = 0.25
-            # img_viz = cv2.addWeighted(img_viz, 1 - alpha, curr_added_area_viz, alpha, 0)
+    coverage_overlay = np.zeros_like(frame)
+    coverage_overlay[coverage, 1] = 255
+    frame = cv2.addWeighted(frame, 0.85, coverage_overlay, 0.15, 0)
 
-            # Show corners as red dots
-            for xy in charuco_corners[:, 0]:
-                img_viz = cv2.circle(img_viz, np.round(xy).astype(int), 2, (0, 0, 255), 2)
-
-    curr_added_area_viz = cv2.cvtColor(covered_area_so_far, cv2.COLOR_GRAY2BGR)
-    curr_added_area_viz[:, :, 2] = 0
-    curr_added_area_viz[:, :, 0] = 0
-    alpha = 0.15
-    img_viz = cv2.addWeighted(img_viz, 1 - alpha, curr_added_area_viz, alpha, 0)
-
-    current_coverage_pct = covered_area_so_far.astype(bool).sum() / np.prod(img_viz.shape[:2]) * 100
-
-    # Add texts
-    img_viz = cv2.putText(img_viz, f"Aruco markers: {nb_detected_markers}/{nb_markers}", (30, 30),
+    # Add information text
+    frame = cv2.putText(frame, f"Aruco markers: {nb_detected_markers}/{nb_total_markers}", (30, 30),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), thickness=2)
 
-    img_viz = cv2.putText(img_viz, f"Corners: {nb_detected_squares}/{nb_corners}", (30, 60),
+    frame = cv2.putText(frame, f"Corners: {nb_detected_squares}/{nb_total_corners}", (30, 60),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), thickness=2)
 
-    img_viz = cv2.putText(img_viz, f"Area: {current_coverage_pct:.2f}% ({len(all_frames_corners)} snapshots)", (30, 90),
+    frame = cv2.putText(frame, f"Area: {coverage.mean() * 100:.2f}% ({len(all_frames_corners)} snapshots)", (30, 90),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), thickness=2)
 
-    f = 800 / max(img_viz.shape)
-    img_viz_resized = cv2.resize(img_viz, (int(img_viz.shape[1] * f),int(img_viz.shape[0] * f)), interpolation=cv2.INTER_LINEAR)
-    cv2.imshow(w_name, img_viz_resized)
+    cv2.imshow(w_name, frame)
 
 ##
 
@@ -229,8 +204,7 @@ on_slider_change(0)
 
 while True:
     k = cv2.waitKeyEx(1)
-    # if k != -1:
-    #     print(k)
+    #  ---Windows--    ---macOS--
     if k == 2424832 or k == 63234:
         p = cv2.getTrackbarPos('Frame', w_name)
         cv2.setTrackbarPos('Frame', w_name, pos=max(0, p-1))
@@ -244,12 +218,14 @@ cv2.destroyAllWindows()
 
 ##
 
+# TODO - Integrate the functions below to the detection loop for iterative refinement
+
 # Compute calibration using all the frames we selected
 retval, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(
     charucoCorners=all_frames_corners,
     charucoIds=all_frames_ids,
     board=charuco_board,
-    imageSize=source_shape[:2],
+    imageSize=shape[:2],
     cameraMatrix=camera_matrix,
     distCoeffs=dist_coeffs,
     flags=cv2.CALIB_USE_QR)
@@ -269,7 +245,7 @@ print(f"Average error: {avg_err:.2f} px")
 # Save calibration data to disk if the reprojection error is ok
 if SAVE:
     cam_name = FILE.split('.')[0]
-    if avg_err < 0.2:
+    if avg_err < REPROJ_ERR:
         print(f"Calibration successful! Saving.")
         np.savez_compressed(FOLDER / f'{cam_name}_frames_ids.npz', np.array(list(all_frames_frame_ids)))
         np.savez_compressed(FOLDER / f'{cam_name}_camera_matrix.npz', camera_matrix)
