@@ -51,14 +51,14 @@ import utilities
 
 
 # Board parameters to detect
-BOARD_COLS = 7                      # Total rows in the board (chessboard)
-BOARD_ROWS = 10                     # Total cols in the board
-SQUARE_LENGTH_MM = 5                # Length of one chessboard square in real life units (i.e. mm)
+BOARD_COLS = 5                      # Total rows in the board (chessboard)
+BOARD_ROWS = 6                     # Total cols in the board
+SQUARE_LENGTH_MM = 1.5                # Length of one chessboard square in real life units (i.e. mm)
 MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
 
 # Video to load
-FOLDER = Path(f'/Users/florent/Desktop/cajal_messor_videos/calibration')
-FILE = 'cam1.mp4'
+FOLDER = Path(f'D:\\MokapRecordings\\persie-240716\\calib')
+FILE = 'cam0_avocado_session32.mp4'
 
 SAVE = False                        # Whether to save the calibration or no
 REPROJ_ERR = 0.2                    # Reprojection error we deem acceptable
@@ -91,7 +91,7 @@ cap = cv2.VideoCapture(video_path.as_posix())
 w_name = 'detection'
 
 # Init some global variables
-coverage = np.full(shape[:2], False)    # This is the area of the image that has been covered so far
+coverage = np.full(shape[:2], False, dtype=bool)    # This is the area of the image that has been covered so far
 
 # These will store detection data for each frame
 all_frames_corners = deque()
@@ -109,15 +109,16 @@ def detect(frame, frame_id=None):
     nb_detected_squares = 0
 
     if frame.ndim == 3:
-        frame_ch0 = frame[:, :, 0]
+        frame_mono = frame[:, :, 0]
+        frame_col = frame
     else:
-        frame_ch0 = frame
-        frame = np.broadcast_to(frame, (*frame.shape, 3))
+        frame_mono = frame
+        frame_col = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
 
     # Detect and refine aruco markers
-    marker_corners, marker_ids, rejected = detector.detectMarkers(frame_ch0)
+    marker_corners, marker_ids, rejected = detector.detectMarkers(frame_mono)
     marker_corners, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
-        image=frame_ch0,
+        image=frame_mono,
         board=charuco_board,
         detectedCorners=marker_corners,
         detectedIds=marker_ids,
@@ -125,7 +126,6 @@ def detect(frame, frame_id=None):
         cameraMatrix=camera_matrix,
         distCoeffs=dist_coeffs)
 
-    # No marker detected
     if marker_ids is not None:
         nb_detected_markers = len(marker_ids)
 
@@ -135,14 +135,14 @@ def detect(frame, frame_id=None):
         nb_detected_squares, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
             markerCorners=marker_corners,
             markerIds=marker_ids,
-            image=frame_ch0,
+            image=frame_mono,
             board=charuco_board,
             cameraMatrix=camera_matrix,
             distCoeffs=dist_coeffs,
             minMarkers=1)
         try:
             # Refine the board corners
-            charuco_corners = cv2.cornerSubPix(frame, charuco_corners,
+            charuco_corners = cv2.cornerSubPix(frame_mono, charuco_corners,
                                                winSize=(20, 20),
                                                zeroZone=(-1, -1),
                                                criteria=criteria)
@@ -152,12 +152,12 @@ def detect(frame, frame_id=None):
         # If corners have been found, show them as red dots
         if charuco_corners is not None:
             for xy in charuco_corners[:, 0]:
-                frame = cv2.circle(frame, np.round(xy).astype(int), 2, (0, 0, 255), 2)
+                frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 2, (0, 0, 255), 2)
 
             # Compute image area with detection
             markers_bin_ctr = utilities.markers_binary_contour(frame, marker_corners)
             hull_pts = utilities.hull_coords(markers_bin_ctr)
-            hull_bin_ctr = utilities.binary_contour(frame_ch0, hull_pts)
+            hull_bin_ctr = utilities.binary_contour(frame_mono, hull_pts)
             detected_area = utilities.fill_binary_contour(hull_bin_ctr)
 
             # Newly detected area is the union of the current detection and the inverse of the overlap with existing
@@ -172,21 +172,26 @@ def detect(frame, frame_id=None):
                 if frame_id is not None:
                     all_frames_frame_ids.append(frame_id)
 
-    coverage_overlay = np.zeros_like(frame)
-    coverage_overlay[coverage, 1] = 255
-    frame = cv2.addWeighted(frame, 0.85, coverage_overlay, 0.15, 0)
+    # Coloured overlay of the coverage
+    coverage_overlay = np.zeros_like(frame_col)
+    coverage_overlay[coverage, 1] = 255     # channel 1 = green
 
-    # Add information text
-    frame = cv2.putText(frame, f"Aruco markers: {nb_detected_markers}/{nb_total_markers}", (30, 30),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), thickness=2)
+    # Add the overlay to the visualisation image
+    frame_col = cv2.addWeighted(frame_col, 0.85, coverage_overlay, 0.15, 0)
 
-    frame = cv2.putText(frame, f"Corners: {nb_detected_squares}/{nb_total_corners}", (30, 60),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), thickness=2)
+    # Add information text to the visualisation image
+    frame_col = cv2.putText(frame_col, f"Aruco markers: {nb_detected_markers}/{nb_total_markers}", (30, 30),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
-    frame = cv2.putText(frame, f"Area: {coverage.mean() * 100:.2f}% ({len(all_frames_corners)} snapshots)", (30, 90),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), thickness=2)
+    frame_col = cv2.putText(frame_col, f"Corners: {nb_detected_squares}/{nb_total_corners}", (30, 60),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
-    cv2.imshow(w_name, frame)
+    frame_col = cv2.putText(frame_col, f"Area: {coverage.mean() * 100:.2f}% ({len(all_frames_corners)} snapshots)", (30, 90),
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+
+    # Show
+    cv2.imshow(w_name, frame_col)
+
 
 ##
 
