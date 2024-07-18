@@ -264,5 +264,5 @@ def hull_coords(contour_img, reduce_to=None):
 
     hull = np.array(cv2.convexHull(contours_all))[:, 0, :]
     if reduce_to is not None:
-        hull = np.round(utilities.reduce_polygon(hull, nb_sides=reduce_to)).astype(int)
+        hull = np.round(reduce_polygon(hull, nb_sides=reduce_to)).astype(int)
     return hull

@@ -58,7 +58,7 @@ MARKER_BITS = 4                     # Size of the markers in 'pixels' (not reall
 
 # Video to load
 FOLDER = Path(f'D:\\MokapRecordings\\persie-240716\\calib')
-FILE = 'cam0_avocado_session32.mp4'
+FILE = 'cam4_blueberry_session32.mp4'
 
 SAVE = False                        # Whether to save the calibration or no
 REPROJ_ERR = 0.2                    # Reprojection error we deem acceptable
@@ -91,20 +91,25 @@ cap = cv2.VideoCapture(video_path.as_posix())
 w_name = 'detection'
 
 # Init some global variables
-coverage = np.full(shape[:2], False, dtype=bool)    # This is the area of the image that has been covered so far
+coverage = np.full(shape[:2], False, dtype=bool)  # This is the area of the image that has been covered so far
+coverage_overlay = np.zeros((*shape[:2], 3), dtype=np.uint8)  # This will be the visualisation overlay
 
 # These will store detection data for each frame
-all_frames_corners = deque()
-all_frames_ids = deque()
-all_frames_frame_ids = deque()
+all_frames_corners = deque(maxlen=100)
+all_frames_ids = deque(maxlen=100)
+all_frames_frame_ids = deque(maxlen=100)
 
 # These are the ones we want to compute, we initialise them to None for the first estimation without a prior
 camera_matrix = None
 dist_coeffs = None
 
+best_error = 999
+curr_error = 999
 
 # This is the function that does the bulk of the work
 def detect(frame, frame_id=None):
+    global camera_matrix, dist_coeffs, best_error, all_frames_corners, all_frames_ids, all_frames_frame_ids, curr_error, best_error
+
     nb_detected_markers = 0
     nb_detected_squares = 0
 
@@ -123,8 +128,8 @@ def detect(frame, frame_id=None):
         detectedCorners=marker_corners,
         detectedIds=marker_ids,
         rejectedCorners=rejected,
-        cameraMatrix=camera_matrix,
-        distCoeffs=dist_coeffs)
+        cameraMatrix=None,
+        distCoeffs=None)
 
     if marker_ids is not None:
         nb_detected_markers = len(marker_ids)
@@ -154,6 +159,14 @@ def detect(frame, frame_id=None):
             for xy in charuco_corners[:, 0]:
                 frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 2, (0, 0, 255), 2)
 
+            # Display reprojected corners as yellow dots
+            if camera_matrix is not None and len(charuco_corners) > 6:
+                _, rvec, tvec, error = cv2.solvePnPGeneric(charuco_board.getChessboardCorners()[charuco_ids], charuco_corners, camera_matrix, dist_coeffs)
+                imgpoints2, _ = cv2.projectPoints(charuco_board.getChessboardCorners()[charuco_ids], rvec[0], tvec[0], camera_matrix, dist_coeffs)
+                curr_error = error[0][0]
+                for xy in imgpoints2[:, 0]:
+                    frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 2, (0, 255, 255), 2)
+
             # Compute image area with detection
             markers_bin_ctr = utilities.markers_binary_contour(frame, marker_corners)
             hull_pts = utilities.hull_coords(markers_bin_ctr)
@@ -168,16 +181,51 @@ def detect(frame, frame_id=None):
             if new_area.mean() * 100 >= 0.2 and len(charuco_corners) > 5:
                 all_frames_corners.append(charuco_corners)
                 all_frames_ids.append(charuco_ids)
+
                 coverage[detected_area] = True
                 if frame_id is not None:
                     all_frames_frame_ids.append(frame_id)
 
-    # Coloured overlay of the coverage
-    coverage_overlay = np.zeros_like(frame_col)
-    coverage_overlay[coverage, 1] = 255     # channel 1 = green
+    if coverage.mean() >= 0.75:
+        # Compute calibration using all the frames we selected
+        calib_ret, camera_matrix_new, dist_coeffs_new, rvecs_new, tvecs_new = cv2.aruco.calibrateCameraCharuco(
+            charucoCorners=all_frames_corners,
+            charucoIds=all_frames_ids,
+            board=charuco_board,
+            imageSize=shape[:2],
+            cameraMatrix=camera_matrix,
+            distCoeffs=dist_coeffs,
+            flags=cv2.CALIB_USE_QR)
+
+        objpoints = [charuco_board.getChessboardCorners()[ids] for ids in all_frames_ids]
+        mean_error = 0
+        for i in range(len(objpoints)):
+            _, rvec, tvec, error = cv2.solvePnPGeneric(objpoints[i], all_frames_corners[i], camera_matrix_new, dist_coeffs_new)
+            mean_error += error[0][0]
+        avg_err = mean_error / len(objpoints)
+
+        if avg_err < best_error:
+            camera_matrix = np.copy(camera_matrix_new)
+            dist_coeffs = np.copy(dist_coeffs_new)
+            best_error = avg_err
+
+        coverage.fill(False)
+        coverage_overlay.fill(0)
+
+        all_frames_corners = deque(maxlen=100)
+        all_frames_ids = deque(maxlen=100)
+        all_frames_frame_ids = deque(maxlen=100)
+
+    # Update the green channel of the overlay array with total coverage
+    coverage_overlay[coverage, 1] = 255
 
     # Add the overlay to the visualisation image
     frame_col = cv2.addWeighted(frame_col, 0.85, coverage_overlay, 0.15, 0)
+
+    # if camera_matrix is not None:
+    #     h, w = shape[:2]
+    #     optimal_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(camera_matrix, dist_coeffs, (w, h), 1, (w, h))
+    #     frame_col = cv2.undistort(frame_col, camera_matrix, dist_coeffs, None, optimal_camera_matrix)
 
     # Add information text to the visualisation image
     frame_col = cv2.putText(frame_col, f"Aruco markers: {nb_detected_markers}/{nb_total_markers}", (30, 30),
@@ -188,6 +236,16 @@ def detect(frame, frame_id=None):
 
     frame_col = cv2.putText(frame_col, f"Area: {coverage.mean() * 100:.2f}% ({len(all_frames_corners)} snapshots)", (30, 90),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+
+    if curr_error != 999:
+        frame_col = cv2.putText(frame_col, f"Current reprojection error: {curr_error:.2f} px",
+                                (30, 120),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+
+    if best_error != 999:
+        frame_col = cv2.putText(frame_col, f"Average best reprojection error: {best_error:.2f} px",
+                                (30, 150),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
     # Show
     cv2.imshow(w_name, frame_col)
@@ -223,39 +281,15 @@ cv2.destroyAllWindows()
 
 ##
 
-# TODO - Integrate the functions below to the detection loop for iterative refinement
-
-# Compute calibration using all the frames we selected
-retval, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.aruco.calibrateCameraCharuco(
-    charucoCorners=all_frames_corners,
-    charucoIds=all_frames_ids,
-    board=charuco_board,
-    imageSize=shape[:2],
-    cameraMatrix=camera_matrix,
-    distCoeffs=dist_coeffs,
-    flags=cv2.CALIB_USE_QR)
-
-# Reproject known 3D points (the board corners) using the freshly computed calibration to estimate the reprojection error
-objpoints = [charuco_board.getChessboardCorners()[ids] for ids in all_frames_ids]
-mean_error = 0
-for i in range(len(objpoints)):
-    imgpoints2, _ = cv2.projectPoints(objpoints[i], rvecs[i], tvecs[i], camera_matrix, dist_coeffs)
-    error = cv2.norm(all_frames_corners[i], imgpoints2, cv2.NORM_L2) / len(imgpoints2)
-    mean_error += error
-    print(f"Frame {all_frames_frame_ids[i]} error: {error:.2f} px")
-avg_err = mean_error / len(objpoints)
-print(f"Average error: {avg_err:.2f} px")
-
-
 # Save calibration data to disk if the reprojection error is ok
 if SAVE:
     cam_name = FILE.split('.')[0]
-    if avg_err < REPROJ_ERR:
+    if best_error < REPROJ_ERR:
         print(f"Calibration successful! Saving.")
-        np.savez_compressed(FOLDER / f'{cam_name}_frames_ids.npz', np.array(list(all_frames_frame_ids)))
+        # np.savez_compressed(FOLDER / f'{cam_name}_frames_ids.npz', np.array(list(all_frames_frame_ids)))
         np.savez_compressed(FOLDER / f'{cam_name}_camera_matrix.npz', camera_matrix)
         np.savez_compressed(FOLDER / f'{cam_name}_dist_coeffs.npz', dist_coeffs)
-        np.savez_compressed(FOLDER / f'{cam_name}_rvecs.npz', np.hstack(rvecs).T)
-        np.savez_compressed(FOLDER / f'{cam_name}_tvecs.npz', np.hstack(tvecs).T)
+        # np.savez_compressed(FOLDER / f'{cam_name}_rvecs.npz', np.hstack(rvecs).T)
+        # np.savez_compressed(FOLDER / f'{cam_name}_tvecs.npz', np.hstack(tvecs).T)
     else:
         print(f"Calibration is meh... Not saving")
