@@ -142,7 +142,7 @@ class IntrinsicsTool:
 
     @property
     def objpoints(self):
-        """ Returns the coordinates of the chessboard corners in 3D, board-centric coordinates """
+        """ Returns the coordinates of the chessboard points in 3D (in board-centric coordinates) """
         return charuco_board.getChessboardCorners()
 
     def detect_markers(self, refine=True):
