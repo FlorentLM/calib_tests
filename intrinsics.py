@@ -61,7 +61,7 @@ MARKER_BITS = 4                     # Size of the markers in 'pixels' (not reall
 
 # Video to load
 FOLDER = Path(f'D:\\MokapRecordings\\persie-240716\\calib')
-FILE = 'cam3_strawberry_session32.mp4'
+FILE = 'cam4_blueberry_session32.mp4'
 
 SAVE = False                        # Whether to save the calibration or no
 REPROJ_ERR = 2.0                    # Reprojection error we deem acceptable (in pixels)
@@ -417,5 +417,5 @@ cv2.destroyAllWindows()
 
 # Save calibration data to disk if the reprojection error is ok
 if calib.best_error_px < REPROJ_ERR:
-    calib.save(FOLDER / Path(FILE).name)
+    calib.save(FOLDER / Path(FILE).stem)
     print(f"Calibration saved!")
