@@ -2,59 +2,59 @@ import numpy as np
 import cv2
 from pathlib import Path
 
-def lines_intersection(line1, line2):
-    """
-        Returns the intersection point of two lines in 2D
-    """
-    xdiff, ydiff = -np.vstack((np.diff(line1, axis=0), np.diff(line2, axis=0))).T
+# def lines_intersection(line1, line2):
+#     """
+#         Returns the intersection point of two lines in 2D
+#     """
+#     xdiff, ydiff = -np.vstack((np.diff(line1, axis=0), np.diff(line2, axis=0))).T
+#
+#     div = np.cross(xdiff, ydiff)
+#     if div == 0:
+#        raise Exception('These lines do not intersect!')
+#
+#     d = (np.cross(*line1), np.cross(*line2))
+#
+#     return np.cross(d, xdiff) / div, np.cross(d, ydiff) / div
 
-    div = np.cross(xdiff, ydiff)
-    if div == 0:
-       raise Exception('These lines do not intersect!')
 
-    d = (np.cross(*line1), np.cross(*line2))
-
-    return np.cross(d, xdiff) / div, np.cross(d, ydiff) / div
-
-
-def reduce_polygon(arr, nb_sides=4):
-    """
-        Simplifies a polygon to the given number of sides, by iteratively removing the shortest side
-    """
-    nb_edges = arr.shape[0]
-
-    # Compute all lengths and coords for starting polygon
-    rolled = np.roll(arr, -1, axis=0)
-    diffs = rolled - arr
-    sides_lengths = np.sqrt(np.sum(diffs ** 2, axis=1))
-    sides_coords = np.hstack((arr, rolled)).reshape(-1, 2, 2).astype(np.float32)
-
-    while nb_edges > nb_sides:
-        # Remove the shortest side
-        idx_shortest = np.argmin(sides_lengths)
-
-        # Replace the vertex coordinates in the two adjacent sides
-        idx_adj_1 = idx_shortest - 1
-        idx_adj_2 = idx_shortest + 1
-
-        # Loop over if last edge is the shortest
-        if idx_adj_2 == nb_edges:
-            idx_adj_2 = 0
-
-        new_vertex = lines_intersection(sides_coords[idx_adj_1], sides_coords[idx_adj_2])
-        sides_coords[idx_adj_1, 1, :] = new_vertex
-        sides_coords[idx_adj_2, 0, :] = new_vertex
-
-        # update the two new lengths
-        sides_lengths[idx_adj_1] = np.sqrt(np.sum(np.diff(sides_coords[idx_adj_1, :, :], axis=0) ** 2))
-        sides_lengths[idx_adj_2] = np.sqrt(np.sum(np.diff(sides_coords[idx_adj_2, :, :], axis=0) ** 2))
-
-        # Update the coord and legths arrays
-        sides_coords = np.delete(sides_coords, idx_shortest, axis=0)
-        sides_lengths = np.delete(sides_lengths, idx_shortest, axis=0)
-        nb_edges = sides_coords.shape[0]
-
-    return np.round(sides_coords[:, 0, :]).astype(int)
+# def reduce_polygon(arr, nb_sides=4):
+#     """
+#         Simplifies a polygon to the given number of sides, by iteratively removing the shortest side
+#     """
+#     nb_edges = arr.shape[0]
+#
+#     # Compute all lengths and coords for starting polygon
+#     rolled = np.roll(arr, -1, axis=0)
+#     diffs = rolled - arr
+#     sides_lengths = np.sqrt(np.sum(diffs ** 2, axis=1))
+#     sides_coords = np.hstack((arr, rolled)).reshape(-1, 2, 2).astype(np.float32)
+#
+#     while nb_edges > nb_sides:
+#         # Remove the shortest side
+#         idx_shortest = np.argmin(sides_lengths)
+#
+#         # Replace the vertex coordinates in the two adjacent sides
+#         idx_adj_1 = idx_shortest - 1
+#         idx_adj_2 = idx_shortest + 1
+#
+#         # Loop over if last edge is the shortest
+#         if idx_adj_2 == nb_edges:
+#             idx_adj_2 = 0
+#
+#         new_vertex = lines_intersection(sides_coords[idx_adj_1], sides_coords[idx_adj_2])
+#         sides_coords[idx_adj_1, 1, :] = new_vertex
+#         sides_coords[idx_adj_2, 0, :] = new_vertex
+#
+#         # update the two new lengths
+#         sides_lengths[idx_adj_1] = np.sqrt(np.sum(np.diff(sides_coords[idx_adj_1, :, :], axis=0) ** 2))
+#         sides_lengths[idx_adj_2] = np.sqrt(np.sum(np.diff(sides_coords[idx_adj_2, :, :], axis=0) ** 2))
+#
+#         # Update the coord and legths arrays
+#         sides_coords = np.delete(sides_coords, idx_shortest, axis=0)
+#         sides_lengths = np.delete(sides_lengths, idx_shortest, axis=0)
+#         nb_edges = sides_coords.shape[0]
+#
+#     return np.round(sides_coords[:, 0, :]).astype(int)
 
 
 def probe_video(video_path):
@@ -91,7 +91,7 @@ def generate_charuco(board_rows, board_cols, square_length_mm=5.0, marker_bits=4
                                    square_length_mm,                # chessboard square side length (normally in meters)
                                    marker_length_mm,                # marker side length (same unit than squareLength)
                                    aruco_dict)
-    return aruco_dict, board
+    return board
 
 
 def print_board(board, multi_size=False, factor=2.0, dpi=1200):
@@ -224,45 +224,3 @@ def print_board(board, multi_size=False, factor=2.0, dpi=1200):
 
     with open(filename, 'w') as f:
         f.write('\n'.join(svg_lines))
-
-
-def markers_binary_contour(frame, markers_coords):
-    """
-        Returns the contour of each marker from a list of markers coords, as a binary array
-    """
-    markers_coloured = cv2.aruco.drawDetectedMarkers(np.zeros_like(frame), markers_coords)
-    # Second channel is the marker perimeter, third channel is the corner square indicator
-    ch1, ch2 = markers_coloured.T[1:]
-    full_perimeter = np.logical_or(np.logical_and(ch1, ch2), ch1).T
-    return full_perimeter
-
-
-def binary_contour(frame, coords):
-    """
-        Returns the contour of a list of coords, as a binary array
-    """
-    coords_added_axis = np.atleast_3d(coords).reshape(1, -1, 2)
-    contours = cv2.drawContours(np.zeros(frame.shape[:2], dtype=np.uint8), coords_added_axis, 0, 255, 1)
-    return contours.astype(bool)
-
-
-def fill_binary_contour(contour_img):
-    """
-        Fills a binary contour...
-    """
-    mask = np.zeros((contour_img.shape[0] + 2, contour_img.shape[1] + 2), dtype=np.uint8)
-    _, filled, _, _ = cv2.floodFill(~contour_img.astype(np.uint8), mask, (0, 0), 0)
-    return filled.astype(bool)
-
-
-def hull_coords(contour_img, reduce_to=None):
-    """
-        Returns the hull of all positive areas in a binary image, optionally simplified to n sides
-    """
-    contours_all, _ = cv2.findContours(contour_img.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours_all = np.vstack(contours_all)
-
-    hull = np.array(cv2.convexHull(contours_all))[:, 0, :]
-    if reduce_to is not None:
-        hull = np.round(reduce_polygon(hull, nb_sides=reduce_to)).astype(int)
-    return hull

@@ -1,11 +1,10 @@
-import numpy as np
-import cv2
 from collections import deque
 from pathlib import Path
+import numpy as np
+np.set_printoptions(precision=3, suppress=True, threshold=5)
+import cv2
 
 import proj_geom
-
-np.set_printoptions(precision=3, suppress=True, threshold=5)
 import utilities
 
 
@@ -54,227 +53,337 @@ import utilities
 
 
 # Board parameters to detect
-BOARD_COLS = 7                      # Total rows in the board (chessboard)
-BOARD_ROWS = 10                     # Total cols in the board
-SQUARE_LENGTH_MM = 5                # Length of one chessboard square in real life units (i.e. mm)
+BOARD_COLS = 5                      # Total rows in the board (chessboard)
+BOARD_ROWS = 6                     # Total cols in the board
+SQUARE_LENGTH_MM = 1.5                # Length of one chessboard square in real life units (i.e. mm)
 MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
 
 # Video to load
-FOLDER = Path(f'/Users/florent/Desktop/cajal_messor_videos/calibration')
-FILE = 'cam3.mp4'
+FOLDER = Path(f'D:\\MokapRecordings\\persie-240716\\calib')
+FILE = 'cam1_coconut_session32.mp4'
 
 SAVE = False                        # Whether to save the calibration or no
 REPROJ_ERR = 1.0                    # Reprojection error we deem acceptable (in pixels)
 
-##
-
 # Generate Charuco board and corresponding detector
-aruco_dict, charuco_board = utilities.generate_charuco(BOARD_ROWS, BOARD_COLS,
-                                             square_length_mm=SQUARE_LENGTH_MM,
-                                             marker_bits=MARKER_BITS)
+charuco_board = utilities.generate_charuco(board_rows=BOARD_ROWS,
+                                           board_cols=BOARD_COLS,
+                                           square_length_mm=SQUARE_LENGTH_MM,
+                                           marker_bits=MARKER_BITS)
 
 # Optionally save the board as a svg for printing
 # utilities.print_board(charuco_board, multi_size=False)
 # utilities.print_board(charuco_board, multi_size=True, factor=1.25)
 
-# Create a detector (default parameters) and define stop criteria for board corners refinement
-detector = cv2.aruco.ArucoDetector(aruco_dict, cv2.aruco.DetectorParameters())
-criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
+## -------------------------------------------------------------
 
-nb_total_markers = len(charuco_board.getIds())
-nb_total_corners = len(charuco_board.getChessboardCorners())
+class IntrinsicsTool:
 
-##
+    def __init__(self, charuco_board):
 
+        self.frame_in = None
+
+        self.board = charuco_board
+        aruco_dict = self.board.getDictionary()
+        self.detector = cv2.aruco.ArucoDetector(aruco_dict, cv2.aruco.DetectorParameters())
+
+        self.total_markers = len(self.board.getIds())
+        self.total_corners = len(self.board.getChessboardCorners())
+
+        self.markers_coords = np.array([])
+        self.marker_ids = np.array([])
+        self.nb_markers = 0
+
+        self.points_coords = np.array([])
+        self.points_ids = np.array([])
+        self.nb_points = 0
+
+        self.reprojected_points = np.array([])
+        self.nb_reprojected = 0
+
+        self.reprojected_corners = np.array([])
+
+        self.board_cols, self.board_rows = self.board.getChessboardSize()
+        self.board_corners_3d = np.array([
+            [0, 0, 0],
+            [0, 1, 0],
+            [1, 1, 0],
+            [1, 0, 0]], dtype=float) * [self.board_cols, self.board_rows, 0] * self.board.getSquareLength()
+
+        # Init some global variables
+        self.coverage = None            # This is the area of the image that has been covered so far
+        self.coverage_overlay = None    # This will be the visualisation overlay
+
+        # These will store detection data for each frame
+        self.multi_samples_points_coords = deque(maxlen=100)
+        self.multi_samples_points_ids = deque(maxlen=100)
+
+        # These are the ones we want to compute, we initialise them to None for the first estimation without a prior
+        self.camera_matrix = None
+        self.dist_coeffs = None
+
+        self.best_error_px = float('inf')
+        self.curr_error_px = float('inf')
+        self.curr_error_mm = float('inf')
+
+    @property
+    def objpoints(self):
+        """ Returns the coordinates of the chessboard corners in 3D, board-centric coordinates """
+        return charuco_board.getChessboardCorners()
+
+    def detect_markers(self, refine=True):
+
+        self.markers_coords = np.array([])
+        self.marker_ids = np.array([])
+        self.nb_markers = 0
+
+        # Detect and refine aruco markers
+        marker_corners, marker_ids, rejected = self.detector.detectMarkers(self.frame_in)
+        if refine:
+            marker_corners, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
+                image=self.frame_in,
+                board=self.board,
+                detectedCorners=marker_corners,
+                detectedIds=marker_ids,
+                rejectedCorners=rejected,
+                cameraMatrix=None,        # Must be None, see here https://github.com/opencv/opencv/issues/24127
+                distCoeffs=None)
+
+        if marker_ids is not None:
+            self.markers_coords = np.array(marker_corners)[:, 0, :, :]
+            self.marker_ids = marker_ids[:, 0]
+            self.nb_markers = self.markers_coords.shape[0]
+
+    def detect_corners(self):
+
+        self.points_coords = np.array([])
+        self.points_ids = np.array([])
+        self.nb_points = 0
+
+        # If any marker has been detected, try to detect the board corners
+        if self.nb_markers > 1:
+            nb_corners, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+                markerCorners=self.markers_coords,
+                markerIds=self.marker_ids,
+                image=self.frame_in,
+                board=self.board,
+                cameraMatrix=self.camera_matrix,
+                distCoeffs=self.dist_coeffs,
+                minMarkers=1)
+            try:
+                # Refine the board corners
+                crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
+                charuco_corners = cv2.cornerSubPix(self.frame_in, charuco_corners,
+                                                   winSize=(20, 20),
+                                                   zeroZone=(-1, -1),
+                                                   criteria=crit)
+            except:
+                pass
+
+            if charuco_corners is not None:
+                self.points_coords = charuco_corners[:, 0, :]
+                self.points_ids = charuco_ids[:, 0]
+                self.nb_points = self.points_coords.shape[0]
+
+    def reproject(self):
+
+        self.reprojected_points = np.array([])
+        self.nb_reprojected = 0
+
+        self.reprojected_corners = np.array([])
+
+        if self.camera_matrix is not None and self.nb_points > 6:
+            _, rvec, tvec, error = cv2.solvePnPGeneric(self.objpoints[self.points_ids],
+                                                       self.points_coords,
+                                                       self.camera_matrix,
+                                                       self.dist_coeffs)
+            imgpoints, _ = cv2.projectPoints(self.objpoints, rvec[0], tvec[0], self.camera_matrix, self.dist_coeffs)
+
+            self.curr_error_px = error[0][0]
+            self.curr_error_mm = proj_geom.perspective_function(error[0][0], self.camera_matrix, tvec[0])
+
+            self.reprojected_points = imgpoints[:, 0, :]
+            self.nb_reprojected = self.reprojected_points.shape[0]
+
+            board_corners_2d, _ = cv2.projectPoints(self.board_corners_3d, rvec[0], tvec[0], self.camera_matrix, self.dist_coeffs)
+            self.reprojected_corners = board_corners_2d[:, 0, :]
+
+    def update_coverage(self):
+
+        if self.nb_points > 0:
+
+            # Compute image area with detection
+            detected_area = np.zeros(self.frame_in.shape[:2], dtype=np.uint8)
+            pts = cv2.convexHull(np.round(self.points_coords[np.newaxis, ...]).astype(int))
+            detected_area = cv2.fillPoly(detected_area, [pts], (255, 255, 255)).astype(bool)
+
+            # Newly detected area is the union of the current detection and the inverse of the overlap with existing
+            overlap = np.logical_and(detected_area, self.coverage)
+            new_area = np.logical_and(detected_area, ~overlap)
+
+            # If the new frame brings sufficient new coverage, add its data to the list
+            if new_area.mean() * 100 >= 0.2 and self.nb_points > 5:
+                self.multi_samples_points_coords.append(self.points_coords[np.newaxis, ...])
+                self.multi_samples_points_ids.append(self.points_ids[np.newaxis, ...])
+
+                self.coverage[detected_area] = True
+
+    def calibrate(self):
+
+        nb_samples = len(self.multi_samples_points_ids)
+
+        # Compute calibration using all the frames we selected
+        calib_ret, camera_matrix_new, dist_coeffs_new, rvecs_new, tvecs_new = cv2.aruco.calibrateCameraCharuco(
+            charucoCorners=self.multi_samples_points_coords,
+            charucoIds=self.multi_samples_points_ids,
+            board=self.board,
+            imageSize=self.frame_in.shape[:2],
+            cameraMatrix=self.camera_matrix,
+            distCoeffs=self.dist_coeffs,
+            flags=cv2.CALIB_USE_QR)
+
+        multi_objpoints = [self.objpoints[ids] for ids in self.multi_samples_points_ids]
+        mean_error_px = 0
+        for i in range(len(multi_objpoints)):
+            _, rvec, tvec, error = cv2.solvePnPGeneric(multi_objpoints[i], self.multi_samples_points_coords[i], camera_matrix_new, dist_coeffs_new)
+            mean_error_px += error[0][0]
+        avg_err_px = mean_error_px / nb_samples
+
+        if avg_err_px < self.best_error_px:
+            self.camera_matrix = camera_matrix_new
+            self.dist_coeffs = dist_coeffs_new
+            self.best_error_px = avg_err_px
+
+    def reset_samples(self):
+
+        self.coverage.fill(False)
+        self.coverage_overlay.fill(0)
+
+        self.multi_samples_points_coords.clear()
+        self.multi_samples_points_ids.clear()
+        # self.multi_samples_frames_numbers.clear()
+
+    def load_frame(self, frame):
+        if frame.ndim == 3:
+            self.frame_in = frame
+        else:
+            self.frame_in = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
+
+        if self.coverage is None or self.coverage_overlay is None:
+            self.coverage = np.full(self.frame_in.shape[:2], False, dtype=bool)
+            self.coverage_overlay = np.zeros((*self.frame_in.shape[:2], 3), dtype=np.uint8)
+
+    def visualise(self):
+
+        frame_out = np.copy(self.frame_in)
+
+        # If corners have been found, show them as red dots
+        for xy in self.points_coords:
+            frame_out = cv2.circle(frame_out, np.round(xy).astype(int), 2, (0, 0, 255), 2)
+
+        # Display reprojected points: currently detected corners as yellow dots, the others as white dots
+        for i, xy in enumerate(self.reprojected_points):
+            if i in self.points_ids:
+                frame_out = cv2.circle(frame_out, np.round(xy).astype(int), 2, (0, 255, 255), 2)
+            else:
+                frame_out = cv2.circle(frame_out, np.round(xy).astype(int), 2, (255, 255, 255), 2)
+
+        # Display board corners in purple
+        # for xy in self.reprojected_corners:
+        #     frame_out = cv2.circle(frame_out, np.round(xy).astype(int), 4, (255, 0, 255), 4)
+
+        # Display board perimeter in purple
+        if len(self.reprojected_corners) > 0:
+            pts = np.round(self.reprojected_corners).astype(int)
+            frame_out = cv2.polylines(frame_out, [pts], True, (255, 0, 255), 2)
+
+        # Add the coverage as a green overlay
+        self.coverage_overlay[self.coverage, 1] = 255
+        frame_out = cv2.addWeighted(frame_out, 0.85, self.coverage_overlay, 0.15, 0)
+
+        # Undistort image
+        if self.camera_matrix is not None:
+            h, w = self.frame_in.shape[:2]
+            optimal_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(self.camera_matrix, self.dist_coeffs, (w, h), 0, (w, h))
+            frame_out = cv2.undistort(frame_out, self.camera_matrix, self.dist_coeffs, None, optimal_camera_matrix)
+
+        # Add information text to the visualisation image
+        frame_out = cv2.putText(frame_out,
+                                     f"Aruco markers: {self.nb_markers}/{self.total_markers}", (30, 30),
+                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+
+        frame_out = cv2.putText(frame_out,
+                                     f"Corners: {self.nb_points}/{self.total_corners}", (30, 60),
+                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+
+        frame_out = cv2.putText(frame_out,
+                                     f"Area: {self.coverage.mean() * 100:.2f}% ({len(self.multi_samples_points_coords)} snapshots)", (30, 90),
+                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+
+        txt = f"{self.curr_error_px:.2f} px ({self.curr_error_mm:.3f} mm)" if (self.best_error_px != float('inf')) & (self.curr_error_mm != float('inf')) else '-'
+        frame_out = cv2.putText(frame_out,
+                                     f"Current reprojection error: {txt}",
+                                     (30, 120),
+                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+
+        txt = f"{self.best_error_px:.2f} px" if self.best_error_px != float('inf') else '-'
+        frame_out = cv2.putText(frame_out,
+                                     f"Best average reprojection error: {txt}",
+                                     (30, 150),
+                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+
+        return frame_out
+
+    def detect(self):
+
+        if self.frame_in is not None:
+            self.detect_markers()
+            self.detect_corners()
+
+            self.update_coverage()
+
+            self.reproject()
+
+            if self.coverage.mean() >= 0.6 and len(self.multi_samples_points_ids) >= 25:
+                self.calibrate()
+                self.reset_samples()
+
+    def save(self, filepath):
+        filepath = Path(filepath)
+        if not filepath.suffix == 'yaml':
+            filepath = filepath.parent / f'{filepath.name}.yaml'
+
+        d = {'camera_matrix': self.camera_matrix.tolist(), 'dist_coeffs': self.dist_coeffs.tolist()}
+
+        with open(filepath, 'w') as file:
+            yaml.dump(d, file)
+
+## -------------------------------------------------------------
+
+# Run mini-GUI
+
+calib = IntrinsicsTool(charuco_board)
+
+w_name = 'detection'
+cv2.namedWindow(w_name)
+
+# Load video
 video_path = FOLDER / FILE
-shape, nb_frames = utilities.probe_video(video_path)
+_, nb_frames = utilities.probe_video(video_path)
 
 cap = cv2.VideoCapture(video_path.as_posix())
 
-w_name = 'detection'
 
-# Init some global variables
-coverage = np.full(shape[:2], False, dtype=bool)  # This is the area of the image that has been covered so far
-coverage_overlay = np.zeros((*shape[:2], 3), dtype=np.uint8)  # This will be the visualisation overlay
-
-# These will store detection data for each frame
-all_frames_corners = deque(maxlen=100)
-all_frames_ids = deque(maxlen=100)
-all_frames_frame_ids = deque(maxlen=100)
-
-# These are the ones we want to compute, we initialise them to None for the first estimation without a prior
-camera_matrix = None
-dist_coeffs = None
-
-best_error_px = 999
-curr_error_px = 999
-curr_error_mm = 999
-
-# This is the function that does the bulk of the work
-def detect(frame, frame_id=None):
-    global camera_matrix, dist_coeffs, best_error_px, all_frames_corners, all_frames_ids, all_frames_frame_ids, curr_error_px, best_error_px, curr_error_mm
-
-    nb_detected_markers = 0
-    nb_detected_squares = 0
-
-    if frame.ndim == 3:
-        frame_mono = frame[:, :, 0]
-        frame_col = frame
-    else:
-        frame_mono = frame
-        frame_col = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-
-    # Detect and refine aruco markers
-    marker_corners, marker_ids, rejected = detector.detectMarkers(frame)
-    marker_corners, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
-        image=frame,
-        board=charuco_board,
-        detectedCorners=marker_corners,
-        detectedIds=marker_ids,
-        rejectedCorners=rejected,
-        cameraMatrix=None,
-        distCoeffs=None)
-
-    if marker_ids is not None:
-        nb_detected_markers = len(marker_ids)
-
-    # If any marker has been detected, try to detect the board corners
-    if nb_detected_markers > 0:
-
-        nb_detected_squares, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
-            markerCorners=marker_corners,
-            markerIds=marker_ids,
-            image=frame,
-            board=charuco_board,
-            cameraMatrix=None,
-            distCoeffs=None,
-            minMarkers=1)
-        try:
-            # Refine the board corners
-            charuco_corners = cv2.cornerSubPix(frame, charuco_corners,
-                                               winSize=(20, 20),
-                                               zeroZone=(-1, -1),
-                                               criteria=criteria)
-        except:
-            pass
-
-        # If corners have been found, show them as red dots
-        if charuco_corners is not None:
-            for xy in charuco_corners[:, 0]:
-                frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 2, (0, 0, 255), 2)
-
-            # Display reprojected corners as yellow dots
-            if camera_matrix is not None and len(charuco_corners) > 4:
-                _, rvec, tvec, error = cv2.solvePnPGeneric(charuco_board.getChessboardCorners()[charuco_ids], charuco_corners, camera_matrix, dist_coeffs)
-                imgpoints, _ = cv2.projectPoints(charuco_board.getChessboardCorners(), rvec[0], tvec[0], camera_matrix, dist_coeffs)
-                curr_error_px = error[0][0]
-                curr_error_mm = proj_geom.perspective_function(curr_error_px, camera_matrix, tvec[0])
-                for i, xy in enumerate(imgpoints[:, 0]):
-                    if i in charuco_ids:
-                        frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 2, (0, 255, 255), 2)
-                    else:
-                        frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 2, (255, 255, 255), 2)
-
-                corners_3d = np.array([[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]], dtype=float) * [BOARD_COLS, BOARD_ROWS, 0] * SQUARE_LENGTH_MM
-                corners, _ = cv2.projectPoints(corners_3d, rvec[0], tvec[0], camera_matrix, dist_coeffs)
-                for xy in corners[:, 0]:
-                    frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 4, (255, 0, 255), 4)
-
-            # Compute image area with detection
-            markers_bin_ctr = utilities.markers_binary_contour(frame, marker_corners)
-            hull_pts = utilities.hull_coords(markers_bin_ctr)
-            hull_bin_ctr = utilities.binary_contour(frame_mono, hull_pts)
-            detected_area = utilities.fill_binary_contour(hull_bin_ctr)
-
-            # Newly detected area is the union of the current detection and the inverse of the overlap with existing
-            overlap = np.logical_and(detected_area, coverage)
-            new_area = np.logical_and(detected_area, ~overlap)
-
-            # If the new frame brings sufficiently new coverage, add its data to the list
-            if new_area.mean() * 100 >= 0.2 and len(charuco_corners) > 5:
-                all_frames_corners.append(charuco_corners)
-                all_frames_ids.append(charuco_ids)
-
-                coverage[detected_area] = True
-                if frame_id is not None:
-                    all_frames_frame_ids.append(frame_id)
-
-    if coverage.mean() >= 0.5:
-        # Compute calibration using all the frames we selected
-        calib_ret, camera_matrix_new, dist_coeffs_new, rvecs_new, tvecs_new = cv2.aruco.calibrateCameraCharuco(
-            charucoCorners=all_frames_corners,
-            charucoIds=all_frames_ids,
-            board=charuco_board,
-            imageSize=shape[:2],
-            cameraMatrix=camera_matrix,
-            distCoeffs=dist_coeffs,
-            flags=cv2.CALIB_USE_QR)
-
-        objpoints = [charuco_board.getChessboardCorners()[ids] for ids in all_frames_ids]
-        mean_error_px = 0
-        for i in range(len(objpoints)):
-            _, rvec, tvec, error = cv2.solvePnPGeneric(objpoints[i], all_frames_corners[i], camera_matrix_new, dist_coeffs_new)
-            mean_error_px += error[0][0]
-        avg_err_px = mean_error_px / len(objpoints)
-
-        if avg_err_px < best_error_px:
-            camera_matrix = np.copy(camera_matrix_new)
-            dist_coeffs = np.copy(dist_coeffs_new)
-            best_error_px = avg_err_px
-
-        coverage.fill(False)
-        coverage_overlay.fill(0)
-
-        all_frames_corners = deque(maxlen=100)
-        all_frames_ids = deque(maxlen=100)
-        all_frames_frame_ids = deque(maxlen=100)
-
-    # Update the green channel of the overlay array with total coverage
-    coverage_overlay[coverage, 1] = 255
-
-    # Add the overlay to the visualisation image
-    frame_col = cv2.addWeighted(frame_col, 0.85, coverage_overlay, 0.15, 0)
-
-    # if camera_matrix is not None:
-    #     h, w = shape[:2]
-    #     optimal_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(camera_matrix, dist_coeffs, (w, h), 1, (w, h))
-    #     frame_col = cv2.undistort(frame_col, camera_matrix, dist_coeffs, None, optimal_camera_matrix)
-
-    # Add information text to the visualisation image
-    frame_col = cv2.putText(frame_col, f"Aruco markers: {nb_detected_markers}/{nb_total_markers}", (30, 30),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-
-    frame_col = cv2.putText(frame_col, f"Corners: {nb_detected_squares}/{nb_total_corners}", (30, 60),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-
-    frame_col = cv2.putText(frame_col, f"Area: {coverage.mean() * 100:.2f}% ({len(all_frames_corners)} snapshots)", (30, 90),
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-
-    if curr_error_px != 999:
-        frame_col = cv2.putText(frame_col, f"Current reprojection error: {curr_error_px:.2f} px ({curr_error_mm:.3f} mm)",
-                                (30, 120),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-
-    if best_error_px != 999:
-        frame_col = cv2.putText(frame_col, f"Average best reprojection error: {best_error_px:.2f} px",
-                                (30, 150),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-
-    # Show
-    cv2.imshow(w_name, frame_col)
-
-
-##
-
-# Run mini GUI
 def on_slider_change(trackbar_value):
     cap.set(cv2.CAP_PROP_POS_FRAMES, trackbar_value)
     r, frame = cap.read()
     if r:
-        detect(frame, frame_id=trackbar_value)
+        calib.load_frame(frame)
+        calib.detect()
+        frame_out = calib.visualise()
+        cv2.imshow(w_name, frame_out)
     pass
 
-cv2.namedWindow(w_name)
 cv2.createTrackbar('Frame', w_name, 0, nb_frames, on_slider_change)
 on_slider_change(0)
 
@@ -293,16 +402,11 @@ while True:
 cv2.destroyAllWindows()
 
 ##
+import yaml
 
 # Save calibration data to disk if the reprojection error is ok
-if SAVE:
-    cam_name = FILE.split('.')[0]
-    if best_error_px < REPROJ_ERR:
-        print(f"Calibration successful! Saving.")
-        # np.savez_compressed(FOLDER / f'{cam_name}_frames_ids.npz', np.array(list(all_frames_frame_ids)))
-        np.savez_compressed(FOLDER / f'{cam_name}_camera_matrix.npz', camera_matrix)
-        np.savez_compressed(FOLDER / f'{cam_name}_dist_coeffs.npz', dist_coeffs)
-        # np.savez_compressed(FOLDER / f'{cam_name}_rvecs.npz', np.hstack(rvecs).T)
-        # np.savez_compressed(FOLDER / f'{cam_name}_tvecs.npz', np.hstack(tvecs).T)
-    else:
-        print(f"Calibration is meh... Not saving")
+cam_name = FILE.split('.')[0]
+
+if calib.best_error_px < REPROJ_ERR:
+    print(f"Calibration successful! Saving.")
+    calib.save(FOLDER / cam_name)
