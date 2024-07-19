@@ -355,8 +355,8 @@ class IntrinsicsTool:
         if self.camera_matrix is not None and self.camera_matrix is not None:
 
             filepath = Path(filepath)
-            if not filepath.suffix == 'toml':
-                filepath = filepath.parent / f'{filepath.name}.toml'
+            if not filepath.suffix == '.toml':
+                filepath = filepath.parent / f'{filepath.stem}.toml'
 
             d = {'camera_matrix': self.camera_matrix.tolist(), 'dist_coeffs': self.dist_coeffs.tolist()}
 
@@ -371,8 +371,8 @@ class IntrinsicsTool:
     def load(self, filepath):
 
         filepath = Path(filepath)
-        if not filepath.suffix == 'toml':
-            filepath = filepath.parent / f'{filepath.name}.toml'
+        if not filepath.suffix == '.toml':
+            filepath = filepath.parent / f'{filepath.stem}.toml'
 
         d = toml.load(filepath)
 
