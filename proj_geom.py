@@ -103,28 +103,13 @@ def triangulate_points(points, projection_matrices):
 
     return X[:3]
 
-##
+def perspective_function(pixel_length, camera_matrix, tvec):
+    """
+        Test - Calculates the real_world length from a pixel length
+    """
+    Tx, Ty, Tz = tvec
+    fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
+    return (pixel_length * Tz / ((fx + fy) / 2)).squeeze()
 
-# def perspective_function(pixel_length, camera_matrix, tvecs):
-#     """
-#         Test - Calculates the real_world length from a pixel length
-#     """
-#     Zx, Zy, Zz = tvecs[0][0], tvecs[1][0], tvecs[2][0]
-#     fx, fy = camera_matrix[0][0], camera_matrix[1][1]
-#     return pixel_length * Zz / fx
-#
-#
-# def undistort_points(points, camera_matrix, dist_coeffs):
-#     """
-#     Undistort 2D points given camera matrix and distortion coefficients.
-#
-#     :param points: List of 2D points, each as (u, v).
-#     :param camera_matrix: Camera intrinsics matrix.
-#     :param dist_coeffs: Distortion coefficients.
-#     :return: List of undistorted 2D points.
-#     """
-#     points = np.array(points, dtype=np.float32).reshape(-1, 1, 2)
-#     undistorted_points = cv2.undistortPoints(points, camera_matrix, dist_coeffs, None, camera_matrix)
-#     return undistorted_points.reshape(-1, 2)
 
 ##

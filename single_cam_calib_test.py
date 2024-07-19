@@ -2,6 +2,9 @@ import numpy as np
 import cv2
 from collections import deque
 from pathlib import Path
+
+import proj_geom
+
 np.set_printoptions(precision=3, suppress=True, threshold=5)
 import utilities
 
@@ -51,17 +54,17 @@ import utilities
 
 
 # Board parameters to detect
-BOARD_COLS = 5                      # Total rows in the board (chessboard)
-BOARD_ROWS = 6                     # Total cols in the board
-SQUARE_LENGTH_MM = 1.5                # Length of one chessboard square in real life units (i.e. mm)
+BOARD_COLS = 7                      # Total rows in the board (chessboard)
+BOARD_ROWS = 10                     # Total cols in the board
+SQUARE_LENGTH_MM = 5                # Length of one chessboard square in real life units (i.e. mm)
 MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
 
 # Video to load
-FOLDER = Path(f'D:\\MokapRecordings\\persie-240716\\calib')
-FILE = 'cam4_blueberry_session32.mp4'
+FOLDER = Path(f'/Users/florent/Desktop/cajal_messor_videos/calibration')
+FILE = 'cam3.mp4'
 
 SAVE = False                        # Whether to save the calibration or no
-REPROJ_ERR = 0.2                    # Reprojection error we deem acceptable
+REPROJ_ERR = 1.0                    # Reprojection error we deem acceptable (in pixels)
 
 ##
 
@@ -103,12 +106,13 @@ all_frames_frame_ids = deque(maxlen=100)
 camera_matrix = None
 dist_coeffs = None
 
-best_error = 999
-curr_error = 999
+best_error_px = 999
+curr_error_px = 999
+curr_error_mm = 999
 
 # This is the function that does the bulk of the work
 def detect(frame, frame_id=None):
-    global camera_matrix, dist_coeffs, best_error, all_frames_corners, all_frames_ids, all_frames_frame_ids, curr_error, best_error
+    global camera_matrix, dist_coeffs, best_error_px, all_frames_corners, all_frames_ids, all_frames_frame_ids, curr_error_px, best_error_px, curr_error_mm
 
     nb_detected_markers = 0
     nb_detected_squares = 0
@@ -121,9 +125,9 @@ def detect(frame, frame_id=None):
         frame_col = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
 
     # Detect and refine aruco markers
-    marker_corners, marker_ids, rejected = detector.detectMarkers(frame_mono)
+    marker_corners, marker_ids, rejected = detector.detectMarkers(frame)
     marker_corners, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
-        image=frame_mono,
+        image=frame,
         board=charuco_board,
         detectedCorners=marker_corners,
         detectedIds=marker_ids,
@@ -140,14 +144,14 @@ def detect(frame, frame_id=None):
         nb_detected_squares, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
             markerCorners=marker_corners,
             markerIds=marker_ids,
-            image=frame_mono,
+            image=frame,
             board=charuco_board,
-            cameraMatrix=camera_matrix,
-            distCoeffs=dist_coeffs,
+            cameraMatrix=None,
+            distCoeffs=None,
             minMarkers=1)
         try:
             # Refine the board corners
-            charuco_corners = cv2.cornerSubPix(frame_mono, charuco_corners,
+            charuco_corners = cv2.cornerSubPix(frame, charuco_corners,
                                                winSize=(20, 20),
                                                zeroZone=(-1, -1),
                                                criteria=criteria)
@@ -160,12 +164,21 @@ def detect(frame, frame_id=None):
                 frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 2, (0, 0, 255), 2)
 
             # Display reprojected corners as yellow dots
-            if camera_matrix is not None and len(charuco_corners) > 6:
+            if camera_matrix is not None and len(charuco_corners) > 4:
                 _, rvec, tvec, error = cv2.solvePnPGeneric(charuco_board.getChessboardCorners()[charuco_ids], charuco_corners, camera_matrix, dist_coeffs)
-                imgpoints2, _ = cv2.projectPoints(charuco_board.getChessboardCorners()[charuco_ids], rvec[0], tvec[0], camera_matrix, dist_coeffs)
-                curr_error = error[0][0]
-                for xy in imgpoints2[:, 0]:
-                    frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 2, (0, 255, 255), 2)
+                imgpoints, _ = cv2.projectPoints(charuco_board.getChessboardCorners(), rvec[0], tvec[0], camera_matrix, dist_coeffs)
+                curr_error_px = error[0][0]
+                curr_error_mm = proj_geom.perspective_function(curr_error_px, camera_matrix, tvec[0])
+                for i, xy in enumerate(imgpoints[:, 0]):
+                    if i in charuco_ids:
+                        frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 2, (0, 255, 255), 2)
+                    else:
+                        frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 2, (255, 255, 255), 2)
+
+                corners_3d = np.array([[0, 0, 0], [0, 1, 0], [1, 1, 0], [1, 0, 0]], dtype=float) * [BOARD_COLS, BOARD_ROWS, 0] * SQUARE_LENGTH_MM
+                corners, _ = cv2.projectPoints(corners_3d, rvec[0], tvec[0], camera_matrix, dist_coeffs)
+                for xy in corners[:, 0]:
+                    frame_col = cv2.circle(frame_col, np.round(xy).astype(int), 4, (255, 0, 255), 4)
 
             # Compute image area with detection
             markers_bin_ctr = utilities.markers_binary_contour(frame, marker_corners)
@@ -186,7 +199,7 @@ def detect(frame, frame_id=None):
                 if frame_id is not None:
                     all_frames_frame_ids.append(frame_id)
 
-    if coverage.mean() >= 0.75:
+    if coverage.mean() >= 0.5:
         # Compute calibration using all the frames we selected
         calib_ret, camera_matrix_new, dist_coeffs_new, rvecs_new, tvecs_new = cv2.aruco.calibrateCameraCharuco(
             charucoCorners=all_frames_corners,
@@ -198,16 +211,16 @@ def detect(frame, frame_id=None):
             flags=cv2.CALIB_USE_QR)
 
         objpoints = [charuco_board.getChessboardCorners()[ids] for ids in all_frames_ids]
-        mean_error = 0
+        mean_error_px = 0
         for i in range(len(objpoints)):
             _, rvec, tvec, error = cv2.solvePnPGeneric(objpoints[i], all_frames_corners[i], camera_matrix_new, dist_coeffs_new)
-            mean_error += error[0][0]
-        avg_err = mean_error / len(objpoints)
+            mean_error_px += error[0][0]
+        avg_err_px = mean_error_px / len(objpoints)
 
-        if avg_err < best_error:
+        if avg_err_px < best_error_px:
             camera_matrix = np.copy(camera_matrix_new)
             dist_coeffs = np.copy(dist_coeffs_new)
-            best_error = avg_err
+            best_error_px = avg_err_px
 
         coverage.fill(False)
         coverage_overlay.fill(0)
@@ -237,13 +250,13 @@ def detect(frame, frame_id=None):
     frame_col = cv2.putText(frame_col, f"Area: {coverage.mean() * 100:.2f}% ({len(all_frames_corners)} snapshots)", (30, 90),
                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
-    if curr_error != 999:
-        frame_col = cv2.putText(frame_col, f"Current reprojection error: {curr_error:.2f} px",
+    if curr_error_px != 999:
+        frame_col = cv2.putText(frame_col, f"Current reprojection error: {curr_error_px:.2f} px ({curr_error_mm:.3f} mm)",
                                 (30, 120),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
-    if best_error != 999:
-        frame_col = cv2.putText(frame_col, f"Average best reprojection error: {best_error:.2f} px",
+    if best_error_px != 999:
+        frame_col = cv2.putText(frame_col, f"Average best reprojection error: {best_error_px:.2f} px",
                                 (30, 150),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
@@ -284,7 +297,7 @@ cv2.destroyAllWindows()
 # Save calibration data to disk if the reprojection error is ok
 if SAVE:
     cam_name = FILE.split('.')[0]
-    if best_error < REPROJ_ERR:
+    if best_error_px < REPROJ_ERR:
         print(f"Calibration successful! Saving.")
         # np.savez_compressed(FOLDER / f'{cam_name}_frames_ids.npz', np.array(list(all_frames_frame_ids)))
         np.savez_compressed(FOLDER / f'{cam_name}_camera_matrix.npz', camera_matrix)
