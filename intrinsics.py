@@ -79,17 +79,21 @@ charuco_board = utilities.generate_charuco(board_rows=BOARD_ROWS,
 
 class IntrinsicsTool:
 
-    def __init__(self, charuco_board):
+    def __init__(self, charuco_board, min_samples=25, max_samples=100):
 
+        # The image on which to detect
         self.frame_in = None
 
+        # Charuco board and detector parameters
         self.board = charuco_board
         aruco_dict = self.board.getDictionary()
         self.detector = cv2.aruco.ArucoDetector(aruco_dict, cv2.aruco.DetectorParameters())
 
+        # Maximum number of markers and board points
         self.total_markers = len(self.board.getIds())
-        self.total_corners = len(self.board.getChessboardCorners())
+        self.total_points = len(self.board.getChessboardCorners())
 
+        # Default attributes for markers and points coordinates and IDs
         self.markers_coords = np.array([])
         self.marker_ids = np.array([])
         self.nb_markers = 0
@@ -103,25 +107,35 @@ class IntrinsicsTool:
 
         self.reprojected_corners = np.array([])
 
-        self.board_cols, self.board_rows = self.board.getChessboardSize()
+        # Default attributes for camera pose (in board-centric coordinates)
+        self.rvec = np.array([])
+        self.tvec = np.array([])
+
+        # Create 3D coordinates for board corners (in board-centric coordinates)
+        board_cols, board_rows = self.board.getChessboardSize()
         self.board_corners_3d = np.array([
             [0, 0, 0],
             [0, 1, 0],
             [1, 1, 0],
-            [1, 0, 0]], dtype=float) * [self.board_cols, self.board_rows, 0] * self.board.getSquareLength()
+            [1, 0, 0]], dtype=float) * [board_cols, board_rows, 0] * self.board.getSquareLength()
 
-        # Init some global variables
-        self.coverage = None            # This is the area of the image that has been covered so far
-        self.coverage_overlay = None    # This will be the visualisation overlay
+        # This will be the area of the image that has been covered so far
+        self.coverage = None
 
-        # These will store detection data for each frame
-        self.multi_samples_points_coords = deque(maxlen=100)
-        self.multi_samples_points_ids = deque(maxlen=100)
+        # This will be the visualisation overlay
+        self.coverage_overlay = None
 
-        # These are the ones we want to compute, we initialise them to None for the first estimation without a prior
+        # These two deque() will store detected points for several samples
+        self.min_samples = min_samples
+        self.max_samples = max_samples
+        self.multi_samples_points_coords = deque(maxlen=self.max_samples)
+        self.multi_samples_points_ids = deque(maxlen=self.max_samples)
+
+        # These are the intrinsics we want to compute, we initialise them to None for 1st estimation without a prior
         self.camera_matrix = None
         self.dist_coeffs = None
 
+        # Initialise reprojection errors to +inf
         self.best_error_px = float('inf')
         self.curr_error_px = float('inf')
         self.curr_error_mm = float('inf')
@@ -194,6 +208,9 @@ class IntrinsicsTool:
 
         self.reprojected_corners = np.array([])
 
+        self.rvec = np.array([])
+        self.tvec = np.array([])
+
         if self.camera_matrix is not None and self.nb_points > 6:
             _, rvec, tvec, error = cv2.solvePnPGeneric(self.objpoints[self.points_ids],
                                                        self.points_coords,
@@ -209,6 +226,9 @@ class IntrinsicsTool:
 
             board_corners_2d, _ = cv2.projectPoints(self.board_corners_3d, rvec[0], tvec[0], self.camera_matrix, self.dist_coeffs)
             self.reprojected_corners = board_corners_2d[:, 0, :]
+
+            self.rvec = rvec[0]
+            self.tvec = tvec[0]
 
     def update_coverage(self):
 
@@ -315,8 +335,8 @@ class IntrinsicsTool:
                                      cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
         frame_out = cv2.putText(frame_out,
-                                     f"Corners: {self.nb_points}/{self.total_corners}", (30, 60),
-                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+                                     f"Corners: {self.nb_points}/{self.total_points}", (30, 60),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
         frame_out = cv2.putText(frame_out,
                                      f"Area: {self.coverage.mean() * 100:.2f}% ({len(self.multi_samples_points_coords)} snapshots)", (30, 90),
@@ -346,7 +366,7 @@ class IntrinsicsTool:
 
             self.reproject()
 
-            if self.coverage.mean() >= 0.6 and len(self.multi_samples_points_ids) >= 25:
+            if self.coverage.mean() >= 0.6 and len(self.multi_samples_points_ids) >= self.min_samples:
                 self.calibrate()
                 self.reset_samples()
 
