@@ -3,6 +3,7 @@ from pathlib import Path
 import numpy as np
 np.set_printoptions(precision=3, suppress=True, threshold=5)
 import cv2
+import toml
 
 import proj_geom
 import utilities
@@ -60,10 +61,10 @@ MARKER_BITS = 4                     # Size of the markers in 'pixels' (not reall
 
 # Video to load
 FOLDER = Path(f'D:\\MokapRecordings\\persie-240716\\calib')
-FILE = 'cam1_coconut_session32.mp4'
+FILE = 'cam3_strawberry_session32.mp4'
 
 SAVE = False                        # Whether to save the calibration or no
-REPROJ_ERR = 1.0                    # Reprojection error we deem acceptable (in pixels)
+REPROJ_ERR = 2.0                    # Reprojection error we deem acceptable (in pixels)
 
 # Generate Charuco board and corresponding detector
 charuco_board = utilities.generate_charuco(board_rows=BOARD_ROWS,
@@ -146,15 +147,16 @@ class IntrinsicsTool:
                 detectedCorners=marker_corners,
                 detectedIds=marker_ids,
                 rejectedCorners=rejected,
-                cameraMatrix=None,        # Must be None, see here https://github.com/opencv/opencv/issues/24127
-                distCoeffs=None)
+                # Known bug with refineDetectedMarkers, fixed in OpenCV 4.9: https://github.com/opencv/opencv/pull/24139
+                cameraMatrix=self.camera_matrix if cv2.getVersionMajor() >= 4 and cv2.getVersionMinor() >= 9 else None,
+                distCoeffs=self.dist_coeffs)
 
         if marker_ids is not None:
             self.markers_coords = np.array(marker_corners)[:, 0, :, :]
             self.marker_ids = marker_ids[:, 0]
             self.nb_markers = self.markers_coords.shape[0]
 
-    def detect_corners(self):
+    def detect_corners(self, refine=True):
 
         self.points_coords = np.array([])
         self.points_ids = np.array([])
@@ -170,15 +172,16 @@ class IntrinsicsTool:
                 cameraMatrix=self.camera_matrix,
                 distCoeffs=self.dist_coeffs,
                 minMarkers=1)
-            try:
-                # Refine the board corners
-                crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
-                charuco_corners = cv2.cornerSubPix(self.frame_in, charuco_corners,
-                                                   winSize=(20, 20),
-                                                   zeroZone=(-1, -1),
-                                                   criteria=crit)
-            except:
-                pass
+            if refine:
+                try:
+                    # Refine the board corners
+                    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
+                    charuco_corners = cv2.cornerSubPix(self.frame_in, charuco_corners,
+                                                       winSize=(20, 20),
+                                                       zeroZone=(-1, -1),
+                                                       criteria=crit)
+                except:
+                    pass
 
             if charuco_corners is not None:
                 self.points_coords = charuco_corners[:, 0, :]
@@ -243,7 +246,7 @@ class IntrinsicsTool:
             flags=cv2.CALIB_USE_QR)
 
         multi_objpoints = [self.objpoints[ids] for ids in self.multi_samples_points_ids]
-        mean_error_px = 0
+        mean_error_px = 0.0
         for i in range(len(multi_objpoints)):
             _, rvec, tvec, error = cv2.solvePnPGeneric(multi_objpoints[i], self.multi_samples_points_coords[i], camera_matrix_new, dist_coeffs_new)
             mean_error_px += error[0][0]
@@ -337,8 +340,8 @@ class IntrinsicsTool:
     def detect(self):
 
         if self.frame_in is not None:
-            self.detect_markers()
-            self.detect_corners()
+            self.detect_markers(refine=True)
+            self.detect_corners(refine=True)
 
             self.update_coverage()
 
@@ -349,14 +352,23 @@ class IntrinsicsTool:
                 self.reset_samples()
 
     def save(self, filepath):
-        filepath = Path(filepath)
-        if not filepath.suffix == 'yaml':
-            filepath = filepath.parent / f'{filepath.name}.yaml'
 
-        d = {'camera_matrix': self.camera_matrix.tolist(), 'dist_coeffs': self.dist_coeffs.tolist()}
+        if self.camera_matrix is not None and self.camera_matrix is not None:
 
-        with open(filepath, 'w') as file:
-            yaml.dump(d, file)
+            filepath = Path(filepath)
+            if not filepath.suffix == 'toml':
+                filepath = filepath.parent / f'{filepath.name}.toml'
+
+            d = {'camera_matrix': self.camera_matrix.tolist(), 'dist_coeffs': self.dist_coeffs.tolist()}
+
+            with open(filepath, 'w') as f:
+                # Remove trailing commas
+                toml_str = toml.dumps(d).replace(',]', ' ]')
+                # Add indents (yes this one-liner is atrocious)
+                lines = [l.replace('], [', f'],\n{"".ljust(len(l.split("=")[0]) + 4)}[') for l in toml_str.splitlines()]
+                toml_str_formatted = '\n'.join(lines)
+                f.write(toml_str_formatted)
+
 
 ## -------------------------------------------------------------
 
@@ -402,11 +414,8 @@ while True:
 cv2.destroyAllWindows()
 
 ##
-import yaml
 
 # Save calibration data to disk if the reprojection error is ok
-cam_name = FILE.split('.')[0]
-
 if calib.best_error_px < REPROJ_ERR:
-    print(f"Calibration successful! Saving.")
-    calib.save(FOLDER / cam_name)
+    calib.save(FOLDER / Path(FILE).name)
+    print(f"Calibration saved!")
