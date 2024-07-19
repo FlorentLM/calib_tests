@@ -17,8 +17,9 @@ import utilities
 # -----     They represent the position of the camera in model coordinates, for each of the frames
 #           where the board is detected (i.e. the origin is a point on the Charuco board)
 #
-# rvecs: Rotation vectors of 3, in radians.
-# -----     They represent the orientation of the camera in model coordinates, for each of the frames
+# rvecs: Rotations about an axis in 3D space: it is a vector pointing in some direction in 3D space,
+# -----     and its length is equal to the angle of rotation around the vector.
+#           They represent the orientation of the camera in model coordinates, for each of the frames
 #           where the board is detected (i.e. the origin is a point on the Charuco board)
 #
 # camera_matrix: a 3x3 matrix of the camera intrinsics parameters
