@@ -368,6 +368,17 @@ class IntrinsicsTool:
                 toml_str_formatted = '\n'.join(lines)
                 f.write(toml_str_formatted)
 
+    def load(self, filepath):
+
+        filepath = Path(filepath)
+        if not filepath.suffix == 'toml':
+            filepath = filepath.parent / f'{filepath.name}.toml'
+
+        d = toml.load(filepath)
+
+        self.camera_matrix = d['camera_matrix']
+        self.dist_coeffs = d['dist_coeffs']
+
 
 ## -------------------------------------------------------------
 
@@ -412,8 +423,6 @@ if __name__ == '__main__':
             break
 
     cv2.destroyAllWindows()
-
-    ##
 
     # Save calibration data to disk if the reprojection error is ok
     if calib.best_error_px < REPROJ_ERR:
