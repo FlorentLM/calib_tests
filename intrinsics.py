@@ -371,50 +371,51 @@ class IntrinsicsTool:
 
 ## -------------------------------------------------------------
 
-# Run mini-GUI
+if __name__ == '__main__':
+    # Run mini-GUI
 
-calib = IntrinsicsTool(charuco_board)
+    calib = IntrinsicsTool(charuco_board)
 
-w_name = 'detection'
-cv2.namedWindow(w_name)
+    w_name = 'detection'
+    cv2.namedWindow(w_name)
 
-# Load video
-video_path = FOLDER / FILE
-_, nb_frames = utilities.probe_video(video_path)
+    # Load video
+    video_path = FOLDER / FILE
+    _, nb_frames = utilities.probe_video(video_path)
 
-cap = cv2.VideoCapture(video_path.as_posix())
+    cap = cv2.VideoCapture(video_path.as_posix())
 
 
-def on_slider_change(trackbar_value):
-    cap.set(cv2.CAP_PROP_POS_FRAMES, trackbar_value)
-    r, frame = cap.read()
-    if r:
-        calib.load_frame(frame)
-        calib.detect()
-        frame_out = calib.visualise()
-        cv2.imshow(w_name, frame_out)
-    pass
+    def on_slider_change(trackbar_value):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, trackbar_value)
+        r, frame = cap.read()
+        if r:
+            calib.load_frame(frame)
+            calib.detect()
+            frame_out = calib.visualise()
+            cv2.imshow(w_name, frame_out)
+        pass
 
-cv2.createTrackbar('Frame', w_name, 0, nb_frames, on_slider_change)
-on_slider_change(0)
+    cv2.createTrackbar('Frame', w_name, 0, nb_frames, on_slider_change)
+    on_slider_change(0)
 
-while True:
-    k = cv2.waitKeyEx(1)
-    #  ---Windows--    ---macOS--
-    if k == 2424832 or k == 63234:
-        p = cv2.getTrackbarPos('Frame', w_name)
-        cv2.setTrackbarPos('Frame', w_name, pos=max(0, p-1))
-    elif k == 2555904 or k == 63235:
-        p = cv2.getTrackbarPos('Frame', w_name)
-        cv2.setTrackbarPos('Frame', w_name, pos=min(nb_frames, p+1))
-    elif k == 27:
-        break
+    while True:
+        k = cv2.waitKeyEx(1)
+        #  ---Windows--    ---macOS--
+        if k == 2424832 or k == 63234:
+            p = cv2.getTrackbarPos('Frame', w_name)
+            cv2.setTrackbarPos('Frame', w_name, pos=max(0, p-1))
+        elif k == 2555904 or k == 63235:
+            p = cv2.getTrackbarPos('Frame', w_name)
+            cv2.setTrackbarPos('Frame', w_name, pos=min(nb_frames, p+1))
+        elif k == 27:
+            break
 
-cv2.destroyAllWindows()
+    cv2.destroyAllWindows()
 
-##
+    ##
 
-# Save calibration data to disk if the reprojection error is ok
-if calib.best_error_px < REPROJ_ERR:
-    calib.save(FOLDER / Path(FILE).stem)
-    print(f"Calibration saved!")
+    # Save calibration data to disk if the reprojection error is ok
+    if calib.best_error_px < REPROJ_ERR:
+        calib.save(FOLDER / Path(FILE).stem)
+        print(f"Calibration saved!")
