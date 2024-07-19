@@ -376,8 +376,8 @@ class IntrinsicsTool:
 
         d = toml.load(filepath)
 
-        self.camera_matrix = d['camera_matrix']
-        self.dist_coeffs = d['dist_coeffs']
+        self.camera_matrix = np.array(d['camera_matrix'])
+        self.dist_coeffs = np.array(d['dist_coeffs'])
 
 
 ## -------------------------------------------------------------
