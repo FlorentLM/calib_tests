@@ -66,7 +66,6 @@ FILE = 'cam4_blueberry_session32.mp4'
 SAVE = False                        # Whether to save the calibration or no
 REPROJ_ERR = 2.0                    # Reprojection error we deem acceptable (in pixels)
 
-# Generate Charuco board and corresponding detector
 charuco_board = utilities.generate_charuco(board_rows=BOARD_ROWS,
                                            board_cols=BOARD_COLS,
                                            square_length_mm=SQUARE_LENGTH_MM,
