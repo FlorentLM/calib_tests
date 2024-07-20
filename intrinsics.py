@@ -60,9 +60,16 @@ BOARD_ROWS = 6                     # Total cols in the board
 SQUARE_LENGTH_MM = 1.5                # Length of one chessboard square in real life units (i.e. mm)
 MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
 
+BOARD_COLS = 7                      # Total rows in the board (chessboard)
+BOARD_ROWS = 10                     # Total cols in the board
+SQUARE_LENGTH_MM = 5                # Length of one chessboard square in real life units (i.e. mm)
+MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
+
 # Video to load
-FOLDER = Path(f'D:\\MokapRecordings\\persie-240716\\calib')
-FILE = 'cam4_blueberry_session32.mp4'
+# FOLDER = Path('D:\\MokapRecordings\\persie-240716\\calib')
+FOLDER = Path('/Users/florent/Desktop/cajal_messor_videos/calibration')
+# FILE = 'cam4_blueberry_session32.mp4'
+FILE = 'cam3.mp4'
 
 SAVE = False                        # Whether to save the calibration or no
 REPROJ_ERR = 2.0                    # Reprojection error we deem acceptable (in pixels)
@@ -228,8 +235,8 @@ class IntrinsicsTool:
             board_corners_2d, _ = cv2.projectPoints(self.board_corners_3d, rvec[0], tvec[0], self.camera_matrix, self.dist_coeffs)
             self.reprojected_corners = board_corners_2d[:, 0, :]
 
-            self.rvec = rvec[0]
-            self.tvec = tvec[0]
+            self.rvec = rvec[0].squeeze()
+            self.tvec = tvec[0].squeeze()
 
     def update_coverage(self):
 

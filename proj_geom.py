@@ -13,23 +13,20 @@ def extrinsics_mat(rvec, tvec, hom=False):
     rvec = np.asarray(rvec).squeeze()
     tvec = np.asarray(tvec).squeeze()
 
-    E = np.zeros((3, 4))
-
     # Convert rotation vector into rotation matrix (and jacobian)
-    R, jacob = cv2.Rodrigues(rvec)
+    R_mat, jacob = cv2.Rodrigues(rvec)
     # Insert R mat into the Transform matrix and append translation vector to last column
-    E[:3, :3] = R
-    E[:3, 3] = tvec
+    E = np.hstack([R_mat, tvec[:, np.newaxis]])
 
     if hom:
-        return np.vstack((E, np.array([0, 0, 0, 1])))
+        return np.vstack([E, np.array([0, 0, 0, 1])])
     else:
         return E
 
 
 def to_rtvecs(extrinsics_mat):
     """
-        Convert 3x4 or 4x4 Extrinsics matrix to rotation vector and translation vector
+        Convert 3x4 (or 4x4) Extrinsics matrix to rotation vector and translation vector
     """
     rvec, jacob = cv2.Rodrigues(extrinsics_mat[:3, :3])
     tvec = extrinsics_mat[:3, 3]
@@ -54,6 +51,67 @@ def projection_mat(intrinsics_mat, extrinsics_mat):
                                 KE = P
     """
     return np.dot(intrinsics_mat, extrinsics_mat)
+
+
+def invert_extrinsics(rvec, tvec):
+    rvec = np.asarray(rvec).squeeze()
+    tvec = np.asarray(tvec).squeeze()
+
+    R_mat, jacob = cv2.Rodrigues(rvec)
+
+    R_inv = np.linalg.inv(R_mat)  # or R_mat.T
+    tvec_inv = - (R_inv @ tvec)
+
+    return R_inv, tvec_inv
+
+
+def invert_extrinsics_mat(extrinsics_mat):
+
+    R_mat = extrinsics_mat[:, :3]
+    tvec = extrinsics_mat[:3, 3]
+
+    R_inv = np.linalg.inv(R_mat)  # or R_mat.T
+    tvec_inv = - (R_inv @ tvec)
+
+    return R_inv, tvec_inv
+
+
+def back_projection(points2d, depth, intrinsics_mat, extrinsics_mat):
+    """
+    Performs back-projection from 2D image coordinates to 3D world coordinates.
+
+        Parameters
+        ----------
+        points2d : 2D image coordinates X, Y
+        depth : The depth value (Z coordinate) at the given 2D image points
+        intrinsics_mat : The intrinsics camera matrix K
+        extrinsics_mat : The extrinsics camera matrix [R|t]
+
+        Returns: Array of the 3D world coordinates for given depth
+
+    """
+
+    if not isinstance(depth, int) and np.atleast_1d(depth).shape[0] != points2d.shape[0]:
+        raise AssertionError('Depth vector length does not match 2D points array')
+
+    if points2d.ndim == 1:
+        # 2D image coordinates -> normalized camera coordinates
+        normalized_coords = np.linalg.inv(intrinsics_mat) @ np.array([*points2d, 1])
+    else:
+        normalized_coords = np.linalg.inv(intrinsics_mat) @ np.c_[points2d, np.ones(points2d.shape[0])].T
+
+    # Depth
+    normalized_coords *= depth
+
+    R_inv, tvec_inv = invert_extrinsics_mat(extrinsics_mat)
+
+    if points2d.ndim == 1:
+        # Convert normalized camera coordinates to world coordinates
+        points3d = R_inv @ normalized_coords + tvec_inv
+    else:
+        points3d = (R_inv @ normalized_coords + tvec_inv[:, np.newaxis]).T
+
+    return points3d
 
 
 def triangulate_points(points, projection_matrices):
@@ -103,13 +161,12 @@ def triangulate_points(points, projection_matrices):
 
     return X[:3]
 
+
 def perspective_function(pixel_length, camera_matrix, tvec):
     """
-        Test - Calculates the real_world length from a pixel length
+        Calculates the real_world length from a pixel length
     """
-    Tx, Ty, Tz = tvec
-    fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
-    return (pixel_length * Tz / ((fx + fy) / 2)).squeeze()
+    tvec = np.asarray(tvec).squeeze()
+    f = (camera_matrix[0, 0] + camera_matrix[1, 1]) / 2.0
+    return (pixel_length * tvec[2] / f).squeeze()
 
-
-##
