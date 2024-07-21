@@ -92,6 +92,11 @@ class IntrinsicsTool:
         # The image on which to detect
         self.frame_in = None
 
+        self._has_markers = False
+        self._has_detection = False
+        self._has_intrinsics = False
+        self._has_extrinsics = False
+
         # Charuco board and detector parameters
         self.board = charuco_board
         aruco_dict = self.board.getDictionary()
@@ -104,28 +109,26 @@ class IntrinsicsTool:
         # Default attributes for markers and points coordinates and IDs
         self.markers_coords = np.array([])
         self.marker_ids = np.array([])
-        self.nb_markers = 0
+        self._nb_seen_markers = 0
 
         self.points_coords = np.array([])
         self.points_ids = np.array([])
-        self.nb_points = 0
+        self._nb_seen_points = 0
 
         self.reprojected_points = np.array([])
-        self.nb_reprojected = 0
-
         self.reprojected_corners = np.array([])
 
-        # Default attributes for camera pose (in board-centric coordinates)
-        self.rvec = np.array([])
-        self.tvec = np.array([])
+        # # Default attributes for extrinsics (i.e. camera pose in board-centric coordinates)
+        self._rvec = np.array([])
+        self._tvec = np.array([])
 
         # Create 3D coordinates for board corners (in board-centric coordinates)
         board_cols, board_rows = self.board.getChessboardSize()
-        self.board_corners_3d = np.array([
+        self._board_corners_3d = np.array([
             [0, 0, 0],
             [0, 1, 0],
             [1, 1, 0],
-            [1, 0, 0]], dtype=float) * [board_cols, board_rows, 0] * self.board.getSquareLength()
+            [1, 0, 0]], dtype=np.float32) * [board_cols, board_rows, 0] * self.board.getSquareLength()
 
         # This will be the area of the image that has been covered so far
         self.coverage = None
@@ -149,23 +152,61 @@ class IntrinsicsTool:
         self.curr_error_mm = float('inf')
 
     @property
-    def objpoints(self):
+    def points3d(self):
         """ Returns the coordinates of the chessboard points in 3D (in board-centric coordinates) """
-        return charuco_board.getChessboardCorners()
+        return self.board.getChessboardCorners()
+
+    @property
+    def points_detect(self):
+        if self._has_detection:
+            return self._points_coords
+        else:
+            return np.array([])
+
+    @property
+    def points_reproj(self):
+        """ Returns the coordinates of the chessboard points in 2D (in camera-centric coordinates) """
+        if self._has_intrinsics and self._has_detection:
+            imgpoints, _ = cv2.projectPoints(self.points3d, self._rvec, self._tvec, self.camera_matrix, self.dist_coeffs)
+            return imgpoints[:, 0, :]
+        else:
+            return np.array([])
+
+    @property
+    def corners3d(self):
+        return self._board_corners_3d
+
+    @property
+    def corners2d(self):
+        if self._has_intrinsics and self._has_detection:
+            board_corners_2d, _ = cv2.projectPoints(self.corners3d, self._rvec, self._tvec, self.camera_matrix, self.dist_coeffs)
+            return board_corners_2d[:, 0, :]
+        else:
+            return np.array([])
+
+    @property
+    def rvec(self):
+        if self._has_extrinsics:
+            return self._rvec
+        else:
+            return np.array([])
+
+    @property
+    def tvec(self):
+        if self._has_extrinsics:
+            return self._tvec
+        else:
+            return np.array([])
 
     def detect_markers(self, refine=True):
 
-        self.markers_coords = np.array([])
-        self.marker_ids = np.array([])
-        self.nb_markers = 0
-
         # Detect and refine aruco markers
-        marker_corners, marker_ids, rejected = self.detector.detectMarkers(self.frame_in)
+        markers_coords, marker_ids, rejected = self.detector.detectMarkers(self.frame_in)
         if refine:
-            marker_corners, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
+            markers_coords, marker_ids, rejected, recovered = cv2.aruco.refineDetectedMarkers(
                 image=self.frame_in,
                 board=self.board,
-                detectedCorners=marker_corners,
+                detectedCorners=markers_coords,
                 detectedIds=marker_ids,
                 rejectedCorners=rejected,
                 # Known bug with refineDetectedMarkers, fixed in OpenCV 4.9: https://github.com/opencv/opencv/pull/24139
@@ -173,21 +214,26 @@ class IntrinsicsTool:
                 distCoeffs=self.dist_coeffs)
 
         if marker_ids is not None:
-            self.markers_coords = np.array(marker_corners)[:, 0, :, :]
-            self.marker_ids = marker_ids[:, 0]
-            self.nb_markers = self.markers_coords.shape[0]
+            self._markers_coords = np.array(markers_coords)[:, 0, :, :]
+            self._marker_ids = marker_ids[:, 0]
+            self._nb_seen_markers = len(self._marker_ids)
+
+            self._has_markers = True
+        else:
+            self._markers_coords = np.array([])
+            self._marker_ids = np.array([])
+            self._nb_seen_markers = 0
+
+            self._has_markers = False
+            self._has_detection = False
 
     def detect_corners(self, refine=True):
 
-        self.points_coords = np.array([])
-        self.points_ids = np.array([])
-        self.nb_points = 0
-
         # If any marker has been detected, try to detect the board corners
-        if self.nb_markers > 1:
-            nb_corners, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
-                markerCorners=self.markers_coords,
-                markerIds=self.marker_ids,
+        if self._has_markers:
+            nb_corners, charuco_coords, charuco_ids = cv2.aruco.interpolateCornersCharuco(
+                markerCorners=self._markers_coords,
+                markerIds=self._marker_ids,
                 image=self.frame_in,
                 board=self.board,
                 cameraMatrix=self.camera_matrix,
@@ -197,54 +243,56 @@ class IntrinsicsTool:
                 try:
                     # Refine the board corners
                     crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.0001)
-                    charuco_corners = cv2.cornerSubPix(self.frame_in, charuco_corners,
+                    charuco_coords = cv2.cornerSubPix(self.frame_in, charuco_coords,
                                                        winSize=(20, 20),
                                                        zeroZone=(-1, -1),
                                                        criteria=crit)
                 except:
                     pass
 
-            if charuco_corners is not None:
-                self.points_coords = charuco_corners[:, 0, :]
-                self.points_ids = charuco_ids[:, 0]
-                self.nb_points = self.points_coords.shape[0]
+            if charuco_coords is not None:
+                self._points_coords = charuco_coords[:, 0, :]
+                self._points_ids = charuco_ids[:, 0]
+                self._nb_seen_points = len(self._points_ids)
+
+                self._has_detection = True
+            else:
+                self._points_coords = np.array([])
+                self._points_ids = np.array([])
+                self._nb_seen_points = 0
+
+                self._has_detection = False
+        else:
+            self._has_detection = False
 
     def reproject(self):
 
-        self.reprojected_points = np.array([])
-        self.nb_reprojected = 0
-
-        self.reprojected_corners = np.array([])
-
-        self.rvec = np.array([])
-        self.tvec = np.array([])
-
-        if self.camera_matrix is not None and self.nb_points > 6:
-            _, rvec, tvec, error = cv2.solvePnPGeneric(self.objpoints[self.points_ids],
-                                                       self.points_coords,
+        if self._has_intrinsics and self._has_detection and len(self._points_coords) > 6:
+            _, rvec, tvec, error = cv2.solvePnPGeneric(self.points3d[self._points_ids],
+                                                       self._points_coords,
                                                        self.camera_matrix,
                                                        self.dist_coeffs)
-            imgpoints, _ = cv2.projectPoints(self.objpoints, rvec[0], tvec[0], self.camera_matrix, self.dist_coeffs)
-
             self.curr_error_px = error[0][0]
             self.curr_error_mm = proj_geom.perspective_function(error[0][0], self.camera_matrix, tvec[0])
 
-            self.reprojected_points = imgpoints[:, 0, :]
-            self.nb_reprojected = self.reprojected_points.shape[0]
+            self._rvec = rvec[0].squeeze()
+            self._tvec = tvec[0].squeeze()
 
-            board_corners_2d, _ = cv2.projectPoints(self.board_corners_3d, rvec[0], tvec[0], self.camera_matrix, self.dist_coeffs)
-            self.reprojected_corners = board_corners_2d[:, 0, :]
+            self._has_extrinsics = True
 
-            self.rvec = rvec[0].squeeze()
-            self.tvec = tvec[0].squeeze()
+        else:
+            self._rvec = np.array([])
+            self._tvec = np.array([])
+
+            self._has_extrinsics = False
 
     def update_coverage(self):
 
-        if self.nb_points > 0:
+        if self._has_detection:
 
             # Compute image area with detection
             detected_area = np.zeros(self.frame_in.shape[:2], dtype=np.uint8)
-            pts = cv2.convexHull(np.round(self.points_coords[np.newaxis, ...]).astype(int))
+            pts = cv2.convexHull(np.round(self._points_coords[np.newaxis, ...]).astype(int))
             detected_area = cv2.fillPoly(detected_area, [pts], (255, 255, 255)).astype(bool)
 
             # Newly detected area is the union of the current detection and the inverse of the overlap with existing
@@ -252,9 +300,9 @@ class IntrinsicsTool:
             new_area = np.logical_and(detected_area, ~overlap)
 
             # If the new frame brings sufficient new coverage, add its data to the list
-            if new_area.mean() * 100 >= 0.2 and self.nb_points > 5:
-                self.multi_samples_points_coords.append(self.points_coords[np.newaxis, ...])
-                self.multi_samples_points_ids.append(self.points_ids[np.newaxis, ...])
+            if new_area.mean() * 100 >= 0.2 and len(self._points_coords) > 5:
+                self.multi_samples_points_coords.append(self._points_coords[np.newaxis, ...])
+                self.multi_samples_points_ids.append(self._points_ids[np.newaxis, ...])
 
                 self.coverage[detected_area] = True
 
@@ -272,7 +320,7 @@ class IntrinsicsTool:
             distCoeffs=self.dist_coeffs,
             flags=cv2.CALIB_USE_QR)
 
-        multi_objpoints = [self.objpoints[ids] for ids in self.multi_samples_points_ids]
+        multi_objpoints = [self.points3d[ids] for ids in self.multi_samples_points_ids]
         mean_error_px = 0.0
         for i in range(len(multi_objpoints)):
             _, rvec, tvec, error = cv2.solvePnPGeneric(multi_objpoints[i], self.multi_samples_points_coords[i], camera_matrix_new, dist_coeffs_new)
@@ -280,9 +328,11 @@ class IntrinsicsTool:
         avg_err_px = mean_error_px / nb_samples
 
         if avg_err_px < self.best_error_px:
-            self.camera_matrix = camera_matrix_new
-            self.dist_coeffs = dist_coeffs_new
+            self.camera_matrix = camera_matrix_new.squeeze()
+            self.dist_coeffs = dist_coeffs_new.squeeze()
             self.best_error_px = avg_err_px
+
+        self._has_intrinsics = True
 
     def reset_samples(self):
 
@@ -291,7 +341,6 @@ class IntrinsicsTool:
 
         self.multi_samples_points_coords.clear()
         self.multi_samples_points_ids.clear()
-        # self.multi_samples_frames_numbers.clear()
 
     def load_frame(self, frame):
         if frame.ndim == 3:
@@ -308,23 +357,29 @@ class IntrinsicsTool:
         frame_out = np.copy(self.frame_in)
 
         # If corners have been found, show them as red dots
-        for xy in self.points_coords:
+        detected_points = self.points_detect
+
+        for xy in detected_points:
             frame_out = cv2.circle(frame_out, np.round(xy).astype(int), 2, (0, 0, 255), 2)
 
         # Display reprojected points: currently detected corners as yellow dots, the others as white dots
-        for i, xy in enumerate(self.reprojected_points):
-            if i in self.points_ids:
+        reproj_points = self.points_reproj
+
+        for i, xy in enumerate(reproj_points):
+            if i in self._points_ids:
                 frame_out = cv2.circle(frame_out, np.round(xy).astype(int), 2, (0, 255, 255), 2)
             else:
                 frame_out = cv2.circle(frame_out, np.round(xy).astype(int), 2, (255, 255, 255), 2)
 
         # Display board corners in purple
-        # for xy in self.reprojected_corners:
+        reproj_corners = self.corners2d
+
+        # for xy in reproj_corners:
         #     frame_out = cv2.circle(frame_out, np.round(xy).astype(int), 4, (255, 0, 255), 4)
 
         # Display board perimeter in purple
-        if len(self.reprojected_corners) > 0:
-            pts = np.round(self.reprojected_corners).astype(int)
+        if len(reproj_corners) > 0:
+            pts = np.round(reproj_corners).astype(int)
             frame_out = cv2.polylines(frame_out, [pts], True, (255, 0, 255), 2)
 
         # Add the coverage as a green overlay
@@ -332,18 +387,18 @@ class IntrinsicsTool:
         frame_out = cv2.addWeighted(frame_out, 0.85, self.coverage_overlay, 0.15, 0)
 
         # Undistort image
-        if self.camera_matrix is not None:
+        if self._has_intrinsics:
             h, w = self.frame_in.shape[:2]
             optimal_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(self.camera_matrix, self.dist_coeffs, (w, h), 0, (w, h))
             frame_out = cv2.undistort(frame_out, self.camera_matrix, self.dist_coeffs, None, optimal_camera_matrix)
 
         # Add information text to the visualisation image
         frame_out = cv2.putText(frame_out,
-                                     f"Aruco markers: {self.nb_markers}/{self.total_markers}", (30, 30),
-                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+                                     f"Aruco markers: {self._nb_seen_markers}/{self.total_markers}", (30, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
         frame_out = cv2.putText(frame_out,
-                                     f"Corners: {self.nb_points}/{self.total_points}", (30, 60),
+                                     f"Corners: {self._nb_seen_points}/{self.total_points}", (30, 60),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
         frame_out = cv2.putText(frame_out,
@@ -380,13 +435,13 @@ class IntrinsicsTool:
 
     def save(self, filepath):
 
-        if self.camera_matrix is not None and self.camera_matrix is not None:
+        if self._has_intrinsics:
 
             filepath = Path(filepath)
             if not filepath.suffix == '.toml':
                 filepath = filepath.parent / f'{filepath.stem}.toml'
 
-            d = {'camera_matrix': self.camera_matrix.tolist(), 'dist_coeffs': self.dist_coeffs.tolist()}
+            d = {'camera_matrix': self.camera_matrix.squeeze().tolist(), 'dist_coeffs': self.dist_coeffs.squeeze().tolist()}
 
             with open(filepath, 'w') as f:
                 # Remove trailing commas
@@ -404,8 +459,10 @@ class IntrinsicsTool:
 
         d = toml.load(filepath)
 
-        self.camera_matrix = np.array(d['camera_matrix'])
-        self.dist_coeffs = np.array(d['dist_coeffs'])
+        self.camera_matrix = np.array(d['camera_matrix']).squeeze()
+        self.dist_coeffs = np.array(d['dist_coeffs']).squeeze()
+
+        self._has_intrinsics = True
 
 
 ## -------------------------------------------------------------
