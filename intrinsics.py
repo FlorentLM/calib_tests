@@ -85,7 +85,7 @@ charuco_board = utilities.generate_charuco(board_rows=BOARD_ROWS,
 
 ## -------------------------------------------------------------
 
-class IntrinsicsTool:
+class CalibrationTool:
 
     def __init__(self, charuco_board, min_samples=25, max_samples=100):
 
@@ -93,9 +93,9 @@ class IntrinsicsTool:
         self.frame_in = None
 
         self._has_markers = False
-        self._has_detection = False
-        self._has_intrinsics = False
-        self._has_extrinsics = False
+        self.has_detection = False
+        self.has_intrinsics = False
+        self.has_extrinsics = False
 
         # Charuco board and detector parameters
         self.board = charuco_board
@@ -131,10 +131,10 @@ class IntrinsicsTool:
             [1, 0, 0]], dtype=np.float32) * [board_cols, board_rows, 0] * self.board.getSquareLength()
 
         # This will be the area of the image that has been covered so far
-        self.coverage = None
+        self._coverage = None
 
         # This will be the visualisation overlay
-        self.coverage_overlay = None
+        self._coverage_overlay = None
 
         # These two deque() will store detected points for several samples
         self.min_samples = min_samples
@@ -157,16 +157,25 @@ class IntrinsicsTool:
         return self.board.getChessboardCorners()
 
     @property
-    def points_detect(self):
-        if self._has_detection:
+    def points2d_detect(self):
+        """ Returns the coordinates of the detected chessboard points in 2D (in camera-centric coordinates) """
+        if self.has_detection:
             return self._points_coords
         else:
             return np.array([])
 
     @property
-    def points_reproj(self):
-        """ Returns the coordinates of the chessboard points in 2D (in camera-centric coordinates) """
-        if self._has_intrinsics and self._has_detection:
+    def ids_detect(self):
+        """ Returns the IDs of the detected chessboard points in 2D (in camera-centric coordinates) """
+        if self.has_detection:
+            return self._points_ids
+        else:
+            return np.array([])
+
+    @property
+    def points2d_reproj(self):
+        """ Returns the coordinates of the reprojected chessboard points in 2D (in camera-centric coordinates) """
+        if self.has_intrinsics and self.has_detection and self.has_extrinsics:
             imgpoints, _ = cv2.projectPoints(self.points3d, self._rvec, self._tvec, self.camera_matrix, self.dist_coeffs)
             return imgpoints[:, 0, :]
         else:
@@ -178,7 +187,7 @@ class IntrinsicsTool:
 
     @property
     def corners2d(self):
-        if self._has_intrinsics and self._has_detection:
+        if self.has_intrinsics and self.has_detection:
             board_corners_2d, _ = cv2.projectPoints(self.corners3d, self._rvec, self._tvec, self.camera_matrix, self.dist_coeffs)
             return board_corners_2d[:, 0, :]
         else:
@@ -186,17 +195,21 @@ class IntrinsicsTool:
 
     @property
     def rvec(self):
-        if self._has_extrinsics:
+        if self.has_extrinsics:
             return self._rvec
         else:
             return np.array([])
 
     @property
     def tvec(self):
-        if self._has_extrinsics:
+        if self.has_extrinsics:
             return self._tvec
         else:
             return np.array([])
+
+    @property
+    def coverage(self):
+        return self._coverage.mean() * 100
 
     def detect_markers(self, refine=True):
 
@@ -225,7 +238,7 @@ class IntrinsicsTool:
             self._nb_seen_markers = 0
 
             self._has_markers = False
-            self._has_detection = False
+            self.has_detection = False
 
     def detect_corners(self, refine=True):
 
@@ -255,19 +268,19 @@ class IntrinsicsTool:
                 self._points_ids = charuco_ids[:, 0]
                 self._nb_seen_points = len(self._points_ids)
 
-                self._has_detection = True
+                self.has_detection = True
             else:
                 self._points_coords = np.array([])
                 self._points_ids = np.array([])
                 self._nb_seen_points = 0
 
-                self._has_detection = False
+                self.has_detection = False
         else:
-            self._has_detection = False
+            self.has_detection = False
 
     def reproject(self):
 
-        if self._has_intrinsics and self._has_detection and len(self._points_coords) > 6:
+        if self.has_intrinsics and self.has_detection and len(self._points_coords) > 6:
             _, rvec, tvec, error = cv2.solvePnPGeneric(self.points3d[self._points_ids],
                                                        self._points_coords,
                                                        self.camera_matrix,
@@ -278,17 +291,17 @@ class IntrinsicsTool:
             self._rvec = rvec[0].squeeze()
             self._tvec = tvec[0].squeeze()
 
-            self._has_extrinsics = True
+            self.has_extrinsics = True
 
         else:
             self._rvec = np.array([])
             self._tvec = np.array([])
 
-            self._has_extrinsics = False
+            self.has_extrinsics = False
 
     def update_coverage(self):
 
-        if self._has_detection:
+        if self.has_detection:
 
             # Compute image area with detection
             detected_area = np.zeros(self.frame_in.shape[:2], dtype=np.uint8)
@@ -296,7 +309,7 @@ class IntrinsicsTool:
             detected_area = cv2.fillPoly(detected_area, [pts], (255, 255, 255)).astype(bool)
 
             # Newly detected area is the union of the current detection and the inverse of the overlap with existing
-            overlap = np.logical_and(detected_area, self.coverage)
+            overlap = np.logical_and(detected_area, self._coverage)
             new_area = np.logical_and(detected_area, ~overlap)
 
             # If the new frame brings sufficient new coverage, add its data to the list
@@ -304,7 +317,7 @@ class IntrinsicsTool:
                 self.multi_samples_points_coords.append(self._points_coords[np.newaxis, ...])
                 self.multi_samples_points_ids.append(self._points_ids[np.newaxis, ...])
 
-                self.coverage[detected_area] = True
+                self._coverage[detected_area] = True
 
     def calibrate(self):
 
@@ -332,38 +345,30 @@ class IntrinsicsTool:
             self.dist_coeffs = dist_coeffs_new.squeeze()
             self.best_error_px = avg_err_px
 
-        self._has_intrinsics = True
+        self.has_intrinsics = True
+
+        self.reset_samples()
 
     def reset_samples(self):
 
-        self.coverage.fill(False)
-        self.coverage_overlay.fill(0)
+        self._coverage.fill(False)
+        self._coverage_overlay.fill(0)
 
         self.multi_samples_points_coords.clear()
         self.multi_samples_points_ids.clear()
-
-    def load_frame(self, frame):
-        if frame.ndim == 3:
-            self.frame_in = frame
-        else:
-            self.frame_in = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
-
-        if self.coverage is None or self.coverage_overlay is None:
-            self.coverage = np.full(self.frame_in.shape[:2], False, dtype=bool)
-            self.coverage_overlay = np.zeros((*self.frame_in.shape[:2], 3), dtype=np.uint8)
 
     def visualise(self):
 
         frame_out = np.copy(self.frame_in)
 
         # If corners have been found, show them as red dots
-        detected_points = self.points_detect
+        detected_points = self.points2d_detect
 
         for xy in detected_points:
             frame_out = cv2.circle(frame_out, np.round(xy).astype(int), 2, (0, 0, 255), 2)
 
         # Display reprojected points: currently detected corners as yellow dots, the others as white dots
-        reproj_points = self.points_reproj
+        reproj_points = self.points2d_reproj
 
         for i, xy in enumerate(reproj_points):
             if i in self._points_ids:
@@ -383,11 +388,11 @@ class IntrinsicsTool:
             frame_out = cv2.polylines(frame_out, [pts], True, (255, 0, 255), 2)
 
         # Add the coverage as a green overlay
-        self.coverage_overlay[self.coverage, 1] = 255
-        frame_out = cv2.addWeighted(frame_out, 0.85, self.coverage_overlay, 0.15, 0)
+        self._coverage_overlay[self._coverage, 1] = 255
+        frame_out = cv2.addWeighted(frame_out, 0.85, self._coverage_overlay, 0.15, 0)
 
         # Undistort image
-        if self._has_intrinsics:
+        if self.has_intrinsics:
             h, w = self.frame_in.shape[:2]
             optimal_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(self.camera_matrix, self.dist_coeffs, (w, h), 0, (w, h))
             frame_out = cv2.undistort(frame_out, self.camera_matrix, self.dist_coeffs, None, optimal_camera_matrix)
@@ -402,8 +407,8 @@ class IntrinsicsTool:
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
         frame_out = cv2.putText(frame_out,
-                                     f"Area: {self.coverage.mean() * 100:.2f}% ({len(self.multi_samples_points_coords)} snapshots)", (30, 90),
-                                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
+                                     f"Area: {self.coverage:.2f}% ({len(self.multi_samples_points_coords)} snapshots)", (30, 90),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
         txt = f"{self.curr_error_px:.2f} px ({self.curr_error_mm:.3f} mm)" if (self.best_error_px != float('inf')) & (self.curr_error_mm != float('inf')) else '-'
         frame_out = cv2.putText(frame_out,
@@ -419,23 +424,27 @@ class IntrinsicsTool:
 
         return frame_out
 
-    def detect(self):
+    def detect(self, frame):
 
-        if self.frame_in is not None:
-            self.detect_markers(refine=True)
-            self.detect_corners(refine=True)
+        if frame.ndim == 3:
+            self.frame_in = frame
+        else:
+            self.frame_in = cv2.cvtColor(frame, cv2.COLOR_GRAY2RGB)
 
-            self.update_coverage()
+        if self._coverage is None or self._coverage_overlay is None or self._coverage.shape[0] != self.frame_in.shape[0] or self._coverage.shape[1] != self.frame_in.shape[1]:
+            self._coverage = np.full(self.frame_in.shape[:2], False, dtype=bool)
+            self._coverage_overlay = np.zeros((*self.frame_in.shape[:2], 3), dtype=np.uint8)
 
-            self.reproject()
+        self.detect_markers(refine=True)
+        self.detect_corners(refine=True)
 
-            if self.coverage.mean() >= 0.6 and len(self.multi_samples_points_ids) >= self.min_samples:
-                self.calibrate()
-                self.reset_samples()
+        self.update_coverage()
+
+        self.reproject()
 
     def save(self, filepath):
 
-        if self._has_intrinsics:
+        if self.has_intrinsics:
 
             filepath = Path(filepath)
             if not filepath.suffix == '.toml':
@@ -462,7 +471,7 @@ class IntrinsicsTool:
         self.camera_matrix = np.array(d['camera_matrix']).squeeze()
         self.dist_coeffs = np.array(d['dist_coeffs']).squeeze()
 
-        self._has_intrinsics = True
+        self.has_intrinsics = True
 
 
 ## -------------------------------------------------------------
@@ -470,7 +479,7 @@ class IntrinsicsTool:
 if __name__ == '__main__':
     # Run mini-GUI
 
-    calib = IntrinsicsTool(charuco_board)
+    calib = CalibrationTool(charuco_board)
 
     w_name = 'detection'
     cv2.namedWindow(w_name)
@@ -486,8 +495,11 @@ if __name__ == '__main__':
         cap.set(cv2.CAP_PROP_POS_FRAMES, trackbar_value)
         r, frame = cap.read()
         if r:
-            calib.load_frame(frame)
-            calib.detect()
+            calib.detect(frame)
+
+            if calib._coverage >= 60:
+                calib.calibrate()
+
             frame_out = calib.visualise()
             cv2.imshow(w_name, frame_out)
         pass
