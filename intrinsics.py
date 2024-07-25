@@ -497,7 +497,7 @@ if __name__ == '__main__':
         if r:
             calib.detect(frame)
 
-            if calib._coverage >= 60:
+            if calib.coverage >= 60:
                 calib.calibrate()
 
             frame_out = calib.visualise()
