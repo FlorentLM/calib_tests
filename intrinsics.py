@@ -55,10 +55,10 @@ import utilities
 
 
 # Board parameters to detect
-BOARD_COLS = 5                      # Total rows in the board (chessboard)
-BOARD_ROWS = 6                     # Total cols in the board
-SQUARE_LENGTH_MM = 1.5                # Length of one chessboard square in real life units (i.e. mm)
-MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
+# BOARD_COLS = 5                      # Total rows in the board (chessboard)
+# BOARD_ROWS = 6                     # Total cols in the board
+# SQUARE_LENGTH_MM = 1.5                # Length of one chessboard square in real life units (i.e. mm)
+# MARKER_BITS = 4                     # Size of the markers in 'pixels' (not really, but you get the idea)
 
 BOARD_COLS = 7                      # Total rows in the board (chessboard)
 BOARD_ROWS = 10                     # Total cols in the board
@@ -68,10 +68,11 @@ MARKER_BITS = 4                     # Size of the markers in 'pixels' (not reall
 # Video to load
 # FOLDER = Path('D:\\MokapRecordings\\persie-240716\\calib')
 FOLDER = Path('/Users/florent/Desktop/cajal_messor_videos/calibration')
+# FOLDER = Path('D:\\MokapRecordings\\240725_persie\\240725-calib')
 # FILE = 'cam4_blueberry_session32.mp4'
-FILE = 'cam3.mp4'
+FILE = 'cam4_blueberry_session0.mp4'
 
-SAVE = False                        # Whether to save the calibration or no
+SAVE = True                        # Whether to save the calibration or no
 REPROJ_ERR = 2.0                    # Reprojection error we deem acceptable (in pixels)
 
 charuco_board = utilities.generate_charuco(board_rows=BOARD_ROWS,
@@ -187,7 +188,7 @@ class CalibrationTool:
 
     @property
     def corners2d(self):
-        if self.has_intrinsics and self.has_detection:
+        if self.has_intrinsics and self.has_detection and self.has_extrinsics:
             board_corners_2d, _ = cv2.projectPoints(self.corners3d, self._rvec, self._tvec, self.camera_matrix, self.dist_coeffs)
             return board_corners_2d[:, 0, :]
         else:

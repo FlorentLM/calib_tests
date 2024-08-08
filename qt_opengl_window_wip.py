@@ -205,10 +205,9 @@ class OpenGLWidget(QOpenGLWidget):
 
         for name, vid in self.full_vids.items():
 
-            self.calib.load(self.FOLDER / f'{name}.toml')
-
             vid.set(cv2.CAP_PROP_POS_FRAMES, self.frame_index)
             r, frame = vid.read()
+
             self.calib.load(self.FOLDER / f'{name}.toml')
 
             self.calib.detect(frame)
@@ -343,12 +342,19 @@ class MinimalWindow(QMainWindow):
         SQUARE_LENGTH_MM = 5  # Length of one chessboard square in real life units (i.e. mm)
         MARKER_BITS = 4  # Size of the markers in 'pixels' (not really, but you get the idea)
 
+        # # Board parameters to detect
+        # BOARD_COLS = 5  # Total rows in the board (chessboard)
+        # BOARD_ROWS = 6  # Total cols in the board
+        # SQUARE_LENGTH_MM = 1.5  # Length of one chessboard square in real life units (i.e. mm)
+        # MARKER_BITS = 4  # Size of the markers in 'pixels' (not really, but you get the idea)
+
         charuco_board = utilities.generate_charuco(board_rows=BOARD_ROWS,
                                                    board_cols=BOARD_COLS,
                                                    square_length_mm=SQUARE_LENGTH_MM,
                                                    marker_bits=MARKER_BITS)
 
         FOLDER = Path('/Users/florent/Desktop/cajal_messor_videos/calibration')
+        # FOLDER = Path('D:\\MokapRecordings\\240725_persie\\240725-calib')
 
         full_vids = {}
 
