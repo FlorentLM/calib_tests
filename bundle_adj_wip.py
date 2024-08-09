@@ -183,7 +183,6 @@ if __name__ == "__main__":
         error = np.concatenate(error)
         print(f'Mean error: {np.abs(error).mean()}')
 
-##
 
     # Convert back to dict format (same as in the extrinsics_test. py file) just to test something
     rvecs = {}
